@@ -5,3 +5,4 @@ pydantic[xck8284@gmail.com]
 pydantic-settings
 python-dotenv
 bcrypt
+PyJWT
