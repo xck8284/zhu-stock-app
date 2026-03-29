@@ -1,7 +1,7 @@
 fastapi
 uvicorn
 sqlalchemy
-pydantic[email]
+pydantic[xck8284@gmail.com]
 pydantic-settings
 python-dotenv
 bcrypt
