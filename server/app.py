@@ -161,7 +161,10 @@ def check_verification_code(db: Session, email: str, purpose: str, code: str) ->
     if not item:
         raise HTTPException(status_code=400, detail="驗證碼錯誤或不存在")
 
-    if item.expires_at and item.expires_at < now_utc():
+    expires_at = _to_utc_naive(item.expires_at)
+    now_val = _to_utc_naive(now_utc())
+
+    if expires_at and expires_at < now_val:
         raise HTTPException(status_code=400, detail="驗證碼已過期")
 
     return item
