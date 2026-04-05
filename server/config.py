@@ -1,4 +1,3 @@
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,13 +18,23 @@ class Settings(BaseSettings):
     MAX_DEVICE_PER_USER: int = 1
 
     EMAIL_DEV_MODE: bool = False
+
+    # 舊 SMTP 先保留，不再使用也沒關係
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_FROM: str = ""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # Brevo
+    BREVO_API_KEY: str = ""
+    BREVO_FROM_EMAIL: str = ""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
 
 settings = Settings()
