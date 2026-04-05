@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     TRIAL_DAYS: int = 30
     MAX_DEVICE_PER_USER: int = 1
 
-    EMAIL_DEV_MODE: bool = True
+    EMAIL_DEV_MODE: bool = False
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
