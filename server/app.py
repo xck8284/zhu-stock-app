@@ -1,17 +1,17 @@
-
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from email.message import EmailMessage
 import random
 import re
-import smtplib
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+
+import sib_api_v3_sdk
+from sib_api_v3_sdk.rest import ApiException
 
 from config import settings
 from database import SessionLocal, engine, Base
@@ -84,21 +84,42 @@ def send_email_code(to_email: str, subject: str, body: str):
     if settings.EMAIL_DEV_MODE:
         return True
 
-    if not settings.SMTP_HOST or not settings.SMTP_FROM:
-        raise HTTPException(status_code=500, detail="SMTP 未設定完整，無法寄信")
+    if not settings.BREVO_API_KEY:
+        raise HTTPException(status_code=500, detail="BREVO_API_KEY 未設定")
 
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = settings.SMTP_FROM
-    msg["To"] = to_email
-    msg.set_content(body)
+    if not settings.BREVO_FROM_EMAIL:
+        raise HTTPException(status_code=500, detail="BREVO_FROM_EMAIL 未設定")
 
-    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=30) as smtp:
-        smtp.starttls()
-        if settings.SMTP_USER:
-            smtp.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-        smtp.send_message(msg)
-    return True
+    configuration = sib_api_v3_sdk.Configuration()
+    configuration.api_key["api-key"] = settings.BREVO_API_KEY
+
+    api_instance = sib_api_v3_sdk.TransactionalEmailsApi(
+        sib_api_v3_sdk.ApiClient(configuration)
+    )
+
+    html_body = body.replace("\n", "<br>")
+
+    send_smtp_email = sib_api_v3_sdk.SendSmtpEmail(
+        sender={
+            "name": "ZHU STOCK",
+            "email": settings.BREVO_FROM_EMAIL,
+        },
+        to=[
+            {
+                "email": to_email,
+            }
+        ],
+        subject=subject,
+        html_content=html_body,
+    )
+
+    try:
+        api_instance.send_transac_email(send_smtp_email)
+        return True
+    except ApiException as e:
+        raise HTTPException(status_code=500, detail=f"Brevo 寄信失敗: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Brevo 寄信失敗: {str(e)}")
 
 
 def create_numeric_code(length: int = 6) -> str:
@@ -330,7 +351,6 @@ def ensure_db_columns():
                 if col not in existing:
                     conn.execute(text(sql))
 
-        # create extra tables
         Base.metadata.create_all(bind=engine)
 
 
@@ -468,8 +488,6 @@ def auth_login(
     if not user.is_active:
         raise HTTPException(status_code=403, detail="帳號已停用")
 
-    # 登入階段不做裝置阻擋，交給 /license/status 處理
-
     token = create_access_token(
         {"sub": user.email, "username": user.username, "is_creator": user.is_creator},
         expires_delta=timedelta(hours=settings.JWT_EXPIRE_HOURS),
@@ -581,7 +599,6 @@ def license_status(
     """
     user = None
 
-    # 桌面端相容模式：用 account + device_id 查授權
     if account:
         account_norm = account.strip()
         user = db.query(User).filter(
@@ -594,7 +611,6 @@ def license_status(
         if not user.is_active:
             raise HTTPException(status_code=401, detail="帳號已停用")
 
-        # 測試階段：只要有 device_id 就直接重綁目前這台，避免一直被舊裝置卡住
         if device_id:
             if hasattr(user, "device_id"):
                 user.device_id = device_id
@@ -607,7 +623,6 @@ def license_status(
             db.refresh(user)
 
     else:
-        # token 模式
         user = get_current_user(authorization, db)
 
     lic = compute_license_status(user)
@@ -889,7 +904,6 @@ def admin_reject_payment_report(
     return {"success": True, "message": "付款回報已駁回"}
 
 
-# Backward compatible endpoints
 @app.post("/register")
 def register_legacy(data: VerifyRegisterCodeRequest, request: Request, db: Session = Depends(get_db)):
     email = normalize_email(data.email)
