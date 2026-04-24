@@ -962,3 +962,38 @@ def license_check_legacy(
         "subscription_end_at": user.subscription_end_at,
         "days_left": lic["days_left"],
     }
+
+from fastapi import Body
+
+# 暫存選股資料（先用記憶體，之後再改DB）
+STOCK_DATA = {
+    "bullish": [],
+    "bearish": [],
+    "warrants": []
+}
+
+# 🔥 上傳選股結果（電腦版用）
+@app.post("/admin/upload-stock-results")
+def upload_stock_results(data: dict = Body(...)):
+    global STOCK_DATA
+
+    STOCK_DATA["bullish"] = data.get("bullish", [])
+    STOCK_DATA["bearish"] = data.get("bearish", [])
+    STOCK_DATA["warrants"] = data.get("warrants", [])
+
+    return {"status": "success", "msg": "資料已更新"}
+
+# 📱 手機讀取（看多 / 看空）
+@app.get("/mobile/stock-pools")
+def get_stock_pools():
+    return {
+        "bullish": STOCK_DATA["bullish"],
+        "bearish": STOCK_DATA["bearish"]
+    }
+
+# 📱 手機讀取（權證）
+@app.get("/mobile/warrants")
+def get_warrants():
+    return {
+        "warrants": STOCK_DATA["warrants"]
+    }
