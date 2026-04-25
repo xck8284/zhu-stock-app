@@ -998,7 +998,7 @@ def get_warrants():
         "warrants": STOCK_DATA["warrants"]
     }
 
-from server.analysis_core import run_analysis_core
+from analysis_core import run_analysis_core
 
 @app.post("/mobile/run-analysis")
 def mobile_run_analysis():
