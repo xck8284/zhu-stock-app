@@ -41,7 +41,10 @@ TREND_MEMORY_FILE = os.path.join(OUTPUT_DIR, "trend_memory.pkl")
 HOLDINGS_FILE = os.path.join(OUTPUT_DIR, "holdings.json")
 AUTH_SESSION_FILE = os.path.join(OUTPUT_DIR, "auth_session.json")
 DEVICE_INFO_FILE = os.path.join(OUTPUT_DIR, "device_info.json")
-AUTH_SERVER_BASE = "http://127.0.0.1:8000"
+AUTH_SERVER_BASE = "https://zhu-stock-app.onrender.com"
+MOBILE_STOCK_UPLOAD_URL = f"{AUTH_SERVER_BASE}/admin/upload-stock-results"
+MOBILE_STOCK_POOL_URL = f"{AUTH_SERVER_BASE}/mobile/stock-pools"
+MOBILE_WARRANT_URL = f"{AUTH_SERVER_BASE}/mobile/warrants"
 
 PAYMENT_BANKS = [
     "元大銀行 / 806 / 20342720080940",
@@ -208,6 +211,199 @@ HEADERS = {
 
 session = requests.Session()
 session.headers.update(HEADERS)
+
+
+
+# =========================
+# 手機版資料同步：桌面版分析結果 → Render 後端 → Flutter APP
+# =========================
+def _mobile_json_value(v):
+    """把 pandas / datetime / numpy 等物件轉成 JSON 可傳輸格式。"""
+    try:
+        if pd.isna(v):
+            return ""
+    except Exception:
+        pass
+
+    if hasattr(v, "strftime"):
+        try:
+            return v.strftime("%Y-%m-%d")
+        except Exception:
+            return str(v)
+
+    try:
+        import numpy as np
+        if isinstance(v, (np.integer,)):
+            return int(v)
+        if isinstance(v, (np.floating,)):
+            return float(v)
+        if isinstance(v, (np.bool_,)):
+            return bool(v)
+    except Exception:
+        pass
+
+    if isinstance(v, (int, float, bool)):
+        return v
+
+    return clean_text(v)
+
+
+def _mobile_pick(row, keys, default=""):
+    for k in keys:
+        try:
+            if k in row:
+                val = _mobile_json_value(row.get(k))
+                if clean_text(val) != "":
+                    return val
+        except Exception:
+            pass
+    return default
+
+
+def mobile_format_stock_df(df, direction_label="看多", max_rows=500):
+    """把桌面版看多 / 看空 DataFrame 轉成手機 APP 顯示用資料。"""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return []
+
+    out = []
+    work = df.copy().head(max_rows)
+
+    for _, row in work.iterrows():
+        item = {
+            "code": clean_text(_mobile_pick(row, ["股票代號", "stock_code", "code"])),
+            "name": clean_text(_mobile_pick(row, ["股票名稱", "stock_name", "name"])),
+            "industry": clean_text(_mobile_pick(row, ["產業別", "industry"])),
+            "settle_date": clean_text(_mobile_pick(row, ["週結算日期", "結算日期", "日期", "settle_date"])),
+            "stars": clean_text(_mobile_pick(row, ["星等", "stars"])),
+            "strong_score": _mobile_json_value(_mobile_pick(row, ["StrongScore", "強度分數", "score"], 0)),
+            "bias": _mobile_json_value(_mobile_pick(row, ["乖離率(%)", "乖離率", "bias"], 0)),
+            "short_alarm": clean_text(_mobile_pick(row, ["短線停利Alarm", "短線回補Alarm", "short_alarm"])),
+            "long_alarm": clean_text(_mobile_pick(row, ["長線停利Alarm", "長線回補Alarm", "long_alarm"])),
+            "direction": direction_label,
+        }
+        if item["code"]:
+            out.append(item)
+
+    return out
+
+
+def mobile_format_warrant_df(df, max_rows=1000):
+    """把桌面版權證 DataFrame 轉成手機 APP 顯示用資料。"""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return []
+
+    out = []
+    work = df.copy().head(max_rows)
+
+    for _, row in work.iterrows():
+        item = {
+            "stock_code": clean_text(_mobile_pick(row, ["股票代號", "stock_code"])),
+            "stock_price": _mobile_json_value(_mobile_pick(row, ["標的現價", "標的股價", "stock_price"], "")),
+            "hv60": _mobile_json_value(_mobile_pick(row, ["標的HV60(%)", "標的HV60", "hv60"], "")),
+            "code": clean_text(_mobile_pick(row, ["權證代號", "warrant_code", "code"])),
+            "name": clean_text(_mobile_pick(row, ["權證名稱", "warrant_name", "name"])),
+            "type": clean_text(_mobile_pick(row, ["權證類型", "權證種類", "type"])),
+            "issuer": clean_text(_mobile_pick(row, ["發行銀行/券商", "發行券商", "issuer"])),
+            "strike": _mobile_json_value(_mobile_pick(row, ["履約價", "履約值", "strike"], "")),
+            "moneyness": _mobile_json_value(_mobile_pick(row, ["價外程度(%)", "價外程度", "moneyness"], "")),
+            "expiry": clean_text(_mobile_pick(row, ["到期日", "expiry"])),
+            "days_left": _mobile_json_value(_mobile_pick(row, ["剩餘天數", "days_left"], "")),
+            "price_text": clean_text(_mobile_pick(row, ["權證收盤/成交", "現價", "成交價", "price_text"])),
+            "ratio": clean_text(_mobile_pick(row, ["行使比例", "ratio"])),
+        }
+        if item["code"] or item["name"]:
+            out.append(item)
+
+    return out
+
+
+def build_mobile_upload_payload(result_dict=None, current_view_data=None):
+    """整理桌面版最新資料，組成 Render 後端接收的 payload。"""
+    result_dict = result_dict if isinstance(result_dict, dict) else {}
+    current_view_data = current_view_data if isinstance(current_view_data, dict) else {}
+
+    bullish_df = result_dict.get("CLIENT_BULLISH", pd.DataFrame())
+    bearish_df = result_dict.get("CLIENT_BEARISH", pd.DataFrame())
+
+    if not isinstance(bullish_df, pd.DataFrame) or bullish_df.empty:
+        bullish_df = result_dict.get("TRAINING_POOL", pd.DataFrame())
+    if not isinstance(bearish_df, pd.DataFrame) or bearish_df.empty:
+        bearish_df = result_dict.get("BEARISH_TRAINING_POOL", pd.DataFrame())
+
+    # 權證資料優先吃權證快篩畫面目前資料
+    warrant_df = pd.DataFrame()
+    for key in [
+        "WARRANT_FASTSCAN_BULLISH",
+        "WARRANT_FASTSCAN",
+        "WARRANT_RESULT",
+        "WARRANTS",
+    ]:
+        obj = current_view_data.get(key, None)
+        if isinstance(obj, pd.DataFrame) and not obj.empty:
+            warrant_df = obj
+            break
+
+    if warrant_df.empty:
+        for key in ["WARRANT_FASTSCAN", "WARRANT_RESULT", "WARRANTS"]:
+            obj = result_dict.get(key, None)
+            if isinstance(obj, pd.DataFrame) and not obj.empty:
+                warrant_df = obj
+                break
+
+    return {
+        "settle_date": clean_text(result_dict.get("settle_date", "")),
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "source": "desktop_zhustock_app",
+        "bullish": mobile_format_stock_df(bullish_df, "看多"),
+        "bearish": mobile_format_stock_df(bearish_df, "看空"),
+        "warrants": mobile_format_warrant_df(warrant_df),
+    }
+
+
+def upload_mobile_stock_results(result_dict=None, current_view_data=None, logger=None, show_message=False):
+    """將看多 / 看空 / 權證資料同步到 Render，供手機 APP 讀取。"""
+    payload = build_mobile_upload_payload(result_dict, current_view_data=current_view_data)
+
+    try:
+        if logger:
+            logger(
+                f"[手機同步] 準備上傳：看多 {len(payload.get('bullish', []))} 檔｜"
+                f"看空 {len(payload.get('bearish', []))} 檔｜權證 {len(payload.get('warrants', []))} 筆"
+            )
+
+        r = requests.post(MOBILE_STOCK_UPLOAD_URL, json=payload, timeout=30)
+        r.raise_for_status()
+
+        try:
+            resp = r.json()
+        except Exception:
+            resp = {"raw": r.text}
+
+        if logger:
+            logger(f"[手機同步] 上傳成功：{resp}")
+
+        if show_message:
+            try:
+                messagebox.showinfo(
+                    "手機同步完成",
+                    f"已同步到手機版\n看多：{len(payload.get('bullish', []))} 檔\n"
+                    f"看空：{len(payload.get('bearish', []))} 檔\n權證：{len(payload.get('warrants', []))} 筆"
+                )
+            except Exception:
+                pass
+
+        return True
+    except Exception as e:
+        if logger:
+            logger(f"[手機同步] 上傳失敗：{e}")
+
+        if show_message:
+            try:
+                messagebox.showwarning("手機同步失敗", f"桌面資料已完成，但手機同步失敗：\n{e}")
+            except Exception:
+                pass
+
+        return False
 
 
 # =========================
@@ -4966,6 +5162,14 @@ class StockApp(tk.Tk):
             self.latest_excel_path = result.get("excel_path", OUTPUT_XLSX)
 
             self.refresh_notebook(result)
+
+            # 手機版同步：分析完成後自動上傳看多 / 看空 / 權證資料
+            upload_mobile_stock_results(
+                result,
+                current_view_data=getattr(self, "current_view_data", {}),
+                logger=self.log,
+                show_message=False
+            )
 
             settle_date = result.get("settle_date", "未知")
             bull_count = len(result.get("CLIENT_BULLISH", pd.DataFrame()))
