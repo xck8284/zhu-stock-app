@@ -1,24 +1,13 @@
-from zhustock_app import build_all_excel
-
 def run_analysis_core():
-    try:
-        result = build_all_excel()
-
-        # 👉 這裡你要依你實際result結構調整
-        bullish = result.get("bullish", [])
-        bearish = result.get("bearish", [])
-        warrants = result.get("warrants", [])
-
-        return {
-            "bullish": bullish,
-            "bearish": bearish,
-            "warrants": warrants
-        }
-
-    except Exception as e:
-        return {
-            "bullish": [],
-            "bearish": [],
-            "warrants": [],
-            "error": str(e)
-        }
+    return {
+        "bullish": [
+            {"code": "2330", "name": "台積電"},
+            {"code": "2317", "name": "鴻海"}
+        ],
+        "bearish": [
+            {"code": "2603", "name": "長榮"}
+        ],
+        "warrants": [
+            {"code": "2330C", "type": "認購"}
+        ]
+    }
