@@ -998,32 +998,28 @@ def get_warrants():
         "warrants": STOCK_DATA["warrants"]
     }
 
+from server.analysis_core import run_analysis_core
 
 @app.post("/mobile/run-analysis")
 def mobile_run_analysis():
     global STOCK_DATA
 
-    bullish = STOCK_DATA.get("bullish", [])
-    bearish = STOCK_DATA.get("bearish", [])
-    warrants = STOCK_DATA.get("warrants", [])
+    try:
+        # 🔥 這行才是重點（你現在缺的）
+        result = run_analysis_core()
 
-    if not bullish and not bearish and not warrants:
+        STOCK_DATA["bullish"] = result.get("bullish", [])
+        STOCK_DATA["bearish"] = result.get("bearish", [])
+        STOCK_DATA["warrants"] = result.get("warrants", [])
+
         return {
-            "status": "empty",
-            "msg": "目前後端沒有資料，請先由電腦版同步一次資料。",
-            "data": {
-                "bullish": [],
-                "bearish": [],
-                "warrants": []
-            }
+            "status": "success",
+            "msg": "分析完成",
+            "data": STOCK_DATA
         }
 
-    return {
-        "status": "success",
-        "msg": "分析資料取得成功",
-        "data": {
-            "bullish": bullish,
-            "bearish": bearish,
-            "warrants": warrants
+    except Exception as e:
+        return {
+            "status": "error",
+            "msg": str(e)
         }
-    }
