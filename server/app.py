@@ -997,3 +997,30 @@ def get_warrants():
     return {
         "warrants": STOCK_DATA["warrants"]
     }
+
+@app.post("/mobile/run-analysis")
+def run_analysis():
+
+    global STOCK_DATA
+
+    # 🚀 這裡直接呼叫你原本分析邏輯
+    # 假設你原本有 function：run_stock_analysis()
+
+    try:
+        result = run_stock_analysis()  # ← 你原本電腦用的
+
+        STOCK_DATA["bullish"] = result.get("bullish", [])
+        STOCK_DATA["bearish"] = result.get("bearish", [])
+        STOCK_DATA["warrants"] = result.get("warrants", [])
+
+        return {
+            "status": "success",
+            "msg": "分析完成",
+            "data": STOCK_DATA
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "msg": str(e)
+        }
