@@ -1,5 +1,5 @@
 {
-  "version": "2026.04.06.2",
-  "download_url": "https://github.com/xck8284/zhu-stock-app/releases/download/v2026.04.06.2/ZhuStockApp_v2026.04.06.2.zip",
-  "notes": "更新內容：持股分析優化、自動更新功能、UI調整"
+  "version": "2026.04.25.1",
+  "url": "https://github.com/xck8284/zhu-stock-app/releases/download/v2026.04.25.1/ZhuStockApp.exe"
+  "notes": "新增手機版同步、權證資料同步與穩定性優化"
 }
