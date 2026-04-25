@@ -998,29 +998,32 @@ def get_warrants():
         "warrants": STOCK_DATA["warrants"]
     }
 
-@app.post("/mobile/run-analysis")
-def run_analysis():
 
+@app.post("/mobile/run-analysis")
+def mobile_run_analysis():
     global STOCK_DATA
 
-    # 🚀 這裡直接呼叫你原本分析邏輯
-    # 假設你原本有 function：run_stock_analysis()
+    bullish = STOCK_DATA.get("bullish", [])
+    bearish = STOCK_DATA.get("bearish", [])
+    warrants = STOCK_DATA.get("warrants", [])
 
-    try:
-        result = run_stock_analysis()  # ← 你原本電腦用的
-
-        STOCK_DATA["bullish"] = result.get("bullish", [])
-        STOCK_DATA["bearish"] = result.get("bearish", [])
-        STOCK_DATA["warrants"] = result.get("warrants", [])
-
+    if not bullish and not bearish and not warrants:
         return {
-            "status": "success",
-            "msg": "分析完成",
-            "data": STOCK_DATA
+            "status": "empty",
+            "msg": "目前後端沒有資料，請先由電腦版同步一次資料。",
+            "data": {
+                "bullish": [],
+                "bearish": [],
+                "warrants": []
+            }
         }
 
-    except Exception as e:
-        return {
-            "status": "error",
-            "msg": str(e)
+    return {
+        "status": "success",
+        "msg": "分析資料取得成功",
+        "data": {
+            "bullish": bullish,
+            "bearish": bearish,
+            "warrants": warrants
         }
+    }
