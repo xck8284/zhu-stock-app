@@ -10,3 +10,7 @@ PyJWT
 sib-api-v3-sdk
 requests
 psycopg2-binary
+pandas
+beautifulsoup4
+lxml
+openpyxl
