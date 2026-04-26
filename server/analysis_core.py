@@ -15,13 +15,12 @@ def fetch_twse_data():
     res.raise_for_status()
     data = res.json()
 
-   rows = data.get("data9") or data.get("data8") or data.get("data") or []
-columns = data.get("fields9") or data.get("fields8") or data.get("fields") or []
+    rows = data.get("data9") or data.get("data8") or data.get("data") or []
+    fields = data.get("fields9") or data.get("fields8") or data.get("fields") or []
 
     if not rows:
         return pd.DataFrame(columns=["code", "name", "close", "change", "volume"])
 
-    # 優先用欄位名稱抓；如果欄位名稱不同，就用固定位置抓
     out = []
 
     code_i = fields.index("證券代號") if "證券代號" in fields else 0
@@ -49,6 +48,7 @@ columns = data.get("fields9") or data.get("fields8") or data.get("fields") or []
             continue
 
     df = pd.DataFrame(out)
+
     if df.empty:
         return pd.DataFrame(columns=["code", "name", "close", "change", "volume"])
 
@@ -117,7 +117,7 @@ def run_analysis_core():
         try:
             score = calc_score(row)
 
-            item = {
+            result.append({
                 "code": str(row["code"]),
                 "name": str(row["name"]),
                 "industry": "",
@@ -127,9 +127,7 @@ def run_analysis_core():
                 "bias": 0,
                 "short_alarm": "否",
                 "long_alarm": "否",
-            }
-
-            result.append(item)
+            })
         except Exception:
             continue
 
