@@ -1005,7 +1005,6 @@ def mobile_run_analysis():
     global STOCK_DATA
 
     try:
-        # 🔥 這行才是重點（你現在缺的）
         result = run_analysis_core()
 
         STOCK_DATA["bullish"] = result.get("bullish", [])
@@ -1015,11 +1014,16 @@ def mobile_run_analysis():
         return {
             "status": "success",
             "msg": "分析完成",
-            "data": STOCK_DATA
+            "data": STOCK_DATA,
         }
 
     except Exception as e:
         return {
             "status": "error",
-            "msg": str(e)
+            "msg": str(e),
+            "data": {
+                "bullish": [],
+                "bearish": [],
+                "warrants": [],
+            },
         }
