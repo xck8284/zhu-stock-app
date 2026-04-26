@@ -46,7 +46,7 @@ def fetch_twse_data():
     df["close"] = pd.to_numeric(df["close"], errors="coerce").fillna(0)
     df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0)
 
-    df = df[(df["code"].astype(str).str.len() == 4) & (df["close"] > 0)]
+    df = df[df["close"] > 0]
 
     return df
 
