@@ -10,7 +10,7 @@ def fetch_twse_data():
         "Accept": "application/json",
     }
 
-    res = requests.get(url, headers=headers, timeout=20)
+    res = requests.get(url, headers=headers, timeout=20, verify=False)
     res.raise_for_status()
     data = res.json()
 
