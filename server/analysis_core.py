@@ -1,78 +1,94 @@
-import pandas as pd
 import requests
+import pandas as pd
 
 
-def safe_pct(a, b):
-    try:
-        if b is None or b == 0 or pd.isna(a) or pd.isna(b):
-            return None
-        return round((a - b) / b * 100, 2)
-    except Exception:
-        return None
+def fetch_twse_data():
+    url = "https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&type=ALLBUT0999"
+    res = requests.get(url)
+    data = res.json()
+
+    rows = data["data9"]
+    columns = data["fields9"]
+
+    df = pd.DataFrame(rows, columns=columns)
+
+    df = df[["證券代號", "證券名稱", "收盤價", "漲跌價差", "成交股數"]]
+    df.columns = ["code", "name", "close", "change", "volume"]
+
+    df["close"] = df["close"].str.replace(",", "").astype(float)
+    df["volume"] = df["volume"].str.replace(",", "").astype(float)
+
+    return df
 
 
-def calc_training_score(grp, trend_info=None):
-    latest = grp.iloc[-1]
+def calc_score(row):
     score = 0
-    tags = []
 
-    close_ = latest["close"]
-    ma20 = latest["ma20"]
-
-    if pd.notna(ma20) and close_ >= ma20:
-        score += 20
-
-    return score, ""
-
-
-# 🔥 手機分析主入口（重點）
-def run_analysis_core():
-    url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
-
-    try:
-        res = requests.get(url, timeout=10)
-        data = res.json()
-    except:
-        return {"bullish": [], "bearish": [], "warrants": []}
-
-    results = []
-
-    for row in data:
+    # 價格動能
+    if row["change"] != "--":
         try:
-            code = row["Code"]
-            name = row["Name"]
-            close = float(row["ClosingPrice"])
+            change = float(row["change"])
+            if change > 0:
+                score += 20
+            elif change < 0:
+                score -= 10
+        except:
+            pass
 
-            # 👉 簡單先給假 MA20（之後再優化）
-            ma20 = close * 0.97
+    # 量能
+    if row["volume"] > 10000000:
+        score += 20
+    elif row["volume"] > 5000000:
+        score += 10
+    elif row["volume"] > 1000000:
+        score += 5
 
-            df = pd.DataFrame([{
-                "close": close,
-                "ma20": ma20
-            }])
+    # 價格大小
+    if row["close"] < 50:
+        score += 5
+    elif row["close"] > 200:
+        score -= 5
 
-            score, _ = calc_training_score(df)
+    return score
 
-            results.append({
-                "code": code,
-                "name": name,
+
+def run_analysis_core():
+    try:
+        df = fetch_twse_data()
+    except Exception as e:
+        return {
+            "bullish": [],
+            "bearish": [],
+            "warrants": []
+        }
+
+    result = []
+
+    for _, row in df.iterrows():
+        try:
+            score = calc_score(row)
+
+            item = {
+                "code": row["code"],
+                "name": row["name"],
                 "industry": "",
                 "settle_date": "",
-                "stars": "★★★★★" if score > 10 else "★★★",
-                "strong_score": score,
-                "bias": round((close - ma20) / ma20 * 100, 2),
+                "stars": "★" * max(1, min(5, score // 20)),
+                "strong_score": round(score, 2),
+                "bias": 0,
                 "short_alarm": "否",
                 "long_alarm": "否"
-            })
+            }
+
+            result.append(item)
 
         except:
             continue
 
-    # 👉 排序
-    results = sorted(results, key=lambda x: x["strong_score"], reverse=True)
+    result = sorted(result, key=lambda x: x["strong_score"], reverse=True)
 
     return {
-        "bullish": results[:80],
+        "bullish": result[:50],
         "bearish": [],
         "warrants": []
     }
