@@ -14,6 +14,10 @@ def fetch_twse_data():
     }
 
     res = requests.get(url, headers=headers, timeout=20, verify=False)
+
+    # 🔥 關鍵：強制 UTF-8
+    res.encoding = "utf-8"
+
     res.raise_for_status()
     data = res.json()
 
@@ -23,6 +27,9 @@ def fetch_twse_data():
         try:
             code = str(r.get("Code", "")).strip()
             name = str(r.get("Name", "")).strip()
+
+            # 🔥 修正亂碼
+            name = name.encode("latin1").decode("utf-8", errors="ignore")
 
             close = pd.to_numeric(
                 str(r.get("ClosingPrice", "0")).replace(",", ""),
