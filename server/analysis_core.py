@@ -15,23 +15,39 @@ def fetch_twse_data():
     data = res.json()
 
     out = []
+
     for r in data:
         try:
             code = str(r.get("Code", "")).strip()
             name = str(r.get("Name", "")).strip()
-            close = pd.to_numeric(str(r.get("ClosingPrice", "0")).replace(",", ""), errors="coerce")
-            volume = pd.to_numeric(str(r.get("TradeVolume", "0")).replace(",", ""), errors="coerce")
 
-            if not code or not name or pd.isna(close) or close <= 0:
+            close = pd.to_numeric(
+                str(r.get("ClosingPrice", "0")).replace(",", ""),
+                errors="coerce"
+            )
+
+            volume = pd.to_numeric(
+                str(r.get("TradeVolume", "0")).replace(",", ""),
+                errors="coerce"
+            )
+
+            if not code or not name:
                 continue
+
+            if pd.isna(close) or close <= 0:
+                continue
+
+            if pd.isna(volume):
+                volume = 0
 
             out.append({
                 "code": code,
                 "name": name,
-                "close": close,
-                "volume": 0 if pd.isna(volume) else volume,
+                "close": float(close),
+                "volume": float(volume),
                 "change": 0,
             })
+
         except Exception:
             continue
 
@@ -40,34 +56,35 @@ def fetch_twse_data():
 
 def calc_score(row):
     score = 0
-    volume = float(row["volume"])
-    close = float(row["close"])
 
-    if volume > 10000000:
+    close = float(row["close"])
+    volume = float(row["volume"])
+
+    if volume >= 10000000:
+        score += 30
+    elif volume >= 5000000:
         score += 20
-    elif volume > 5000000:
+    elif volume >= 1000000:
         score += 10
-    elif volume > 1000000:
-        score += 5
 
     if 50 <= close <= 200:
-        score += 10
+        score += 20
     elif close < 50:
-        score += 5
+        score += 10
     elif close > 200:
-        score -= 5
+        score += 5
 
     return score
 
 
 def stars_from_score(score):
-    if score >= 30:
+    if score >= 45:
         return "★★★★★"
-    if score >= 20:
+    if score >= 35:
         return "★★★★☆"
-    if score >= 10:
+    if score >= 25:
         return "★★★☆☆"
-    if score >= 5:
+    if score >= 15:
         return "★★☆☆☆"
     return "★☆☆☆☆"
 
@@ -100,6 +117,7 @@ def run_analysis_core():
                 "short_alarm": "否",
                 "long_alarm": "否",
             })
+
         except Exception:
             continue
 
