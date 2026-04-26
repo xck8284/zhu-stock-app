@@ -4,7 +4,12 @@ import pandas as pd
 
 def fetch_twse_data():
     url = "https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&type=ALLBUT0999"
-    res = requests.get(url)
+    headers = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/json",
+}
+
+res = requests.get(url, headers=headers, timeout=10)
     data = res.json()
 
     rows = data["data9"]
