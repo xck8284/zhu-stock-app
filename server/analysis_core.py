@@ -1,5 +1,8 @@
 import requests
 import pandas as pd
+import urllib3
+
+urllib3.disable_warnings()
 
 
 def fetch_twse_data():
