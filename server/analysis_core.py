@@ -7,44 +7,54 @@ def fetch_twse_data():
 
     headers = {
         "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json",
+        "Accept": "application/json,text/plain,*/*",
+        "Referer": "https://www.twse.com.tw/",
     }
 
-    res = requests.get(url, headers=headers, timeout=10)
+    res = requests.get(url, headers=headers, timeout=15)
     res.raise_for_status()
     data = res.json()
 
     rows = data.get("data9") or data.get("data") or []
-    columns = data.get("fields9") or data.get("fields") or []
+    fields = data.get("fields9") or data.get("fields") or []
 
-    if not rows or not columns:
+    if not rows:
         return pd.DataFrame(columns=["code", "name", "close", "change", "volume"])
 
-    df = pd.DataFrame(rows, columns=columns)
+    # 優先用欄位名稱抓；如果欄位名稱不同，就用固定位置抓
+    out = []
 
-    need_cols = ["證券代號", "證券名稱", "收盤價", "漲跌價差", "成交股數"]
-    for c in need_cols:
-        if c not in df.columns:
-            return pd.DataFrame(columns=["code", "name", "close", "change", "volume"])
+    code_i = fields.index("證券代號") if "證券代號" in fields else 0
+    name_i = fields.index("證券名稱") if "證券名稱" in fields else 1
+    close_i = fields.index("收盤價") if "收盤價" in fields else 8
+    change_i = fields.index("漲跌價差") if "漲跌價差" in fields else 10
+    volume_i = fields.index("成交股數") if "成交股數" in fields else 2
 
-    df = df[need_cols].copy()
-    df.columns = ["code", "name", "close", "change", "volume"]
+    for r in rows:
+        try:
+            code = str(r[code_i]).strip()
+            name = str(r[name_i]).strip()
+            close = str(r[close_i]).replace(",", "").replace("--", "0").strip()
+            change = str(r[change_i]).replace(",", "").replace("+", "").replace("--", "0").strip()
+            volume = str(r[volume_i]).replace(",", "").replace("--", "0").strip()
 
-    df["close"] = (
-        df["close"]
-        .astype(str)
-        .str.replace(",", "", regex=False)
-        .str.replace("--", "0", regex=False)
-    )
-    df["volume"] = (
-        df["volume"]
-        .astype(str)
-        .str.replace(",", "", regex=False)
-        .str.replace("--", "0", regex=False)
-    )
+            out.append({
+                "code": code,
+                "name": name,
+                "close": pd.to_numeric(close, errors="coerce"),
+                "change": pd.to_numeric(change, errors="coerce"),
+                "volume": pd.to_numeric(volume, errors="coerce"),
+            })
+        except Exception:
+            continue
 
-    df["close"] = pd.to_numeric(df["close"], errors="coerce").fillna(0)
-    df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0)
+    df = pd.DataFrame(out)
+    if df.empty:
+        return pd.DataFrame(columns=["code", "name", "close", "change", "volume"])
+
+    df["close"] = df["close"].fillna(0)
+    df["change"] = df["change"].fillna(0)
+    df["volume"] = df["volume"].fillna(0)
 
     df = df[df["close"] > 0]
 
@@ -54,17 +64,14 @@ def fetch_twse_data():
 def calc_score(row):
     score = 0
 
-    try:
-        change = float(str(row["change"]).replace(",", "").replace("+", ""))
-        if change > 0:
-            score += 20
-        elif change < 0:
-            score -= 10
-    except Exception:
-        pass
-
+    change = float(row["change"])
     volume = float(row["volume"])
     close = float(row["close"])
+
+    if change > 0:
+        score += 20
+    elif change < 0:
+        score -= 10
 
     if volume > 10000000:
         score += 20
@@ -96,11 +103,12 @@ def stars_from_score(score):
 def run_analysis_core():
     try:
         df = fetch_twse_data()
-    except Exception:
+    except Exception as e:
         return {
             "bullish": [],
             "bearish": [],
-            "warrants": []
+            "warrants": [],
+            "error": str(e),
         }
 
     result = []
@@ -118,7 +126,7 @@ def run_analysis_core():
                 "strong_score": round(score, 2),
                 "bias": 0,
                 "short_alarm": "否",
-                "long_alarm": "否"
+                "long_alarm": "否",
             }
 
             result.append(item)
@@ -130,5 +138,5 @@ def run_analysis_core():
     return {
         "bullish": result[:50],
         "bearish": [],
-        "warrants": []
+        "warrants": [],
     }
