@@ -15,19 +15,13 @@ import traceback
 import socket
 import platform
 import uuid
-import tempfile
-import shutil
-import subprocess
-import webbrowser
 import requests
-import certifi
-import urllib3
 import pandas as pd
 import tkinter as tk
 from tkinter import ttk, messagebox
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote_plus
 from openpyxl.styles import Font, Alignment
 from openpyxl.utils import get_column_letter
 
@@ -35,72 +29,19 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.patches import Rectangle
 
-os.environ['SSL_CERT_FILE'] = certifi.where()
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # =========================
 # 使用者設定
 # =========================
-def get_runtime_dir():
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
-
-def get_safe_output_dir():
-    runtime_dir = get_runtime_dir()
-    portable_flag = os.path.join(runtime_dir, "portable.flag")
-    if os.path.exists(portable_flag):
-        candidates = [os.path.join(runtime_dir, "zhustock_data")]
-    else:
-        home = os.path.expanduser("~")
-        candidates = [
-            os.path.join(home, "Documents", "zhustock"),
-            os.path.join(home, "Desktop", "zhustock"),
-            os.path.join(home, "Downloads", "zhustock"),
-            os.path.join(tempfile.gettempdir(), "zhustock"),
-        ]
-    for path in candidates:
-        try:
-            os.makedirs(path, exist_ok=True)
-            test_file = os.path.join(path, "_write_test.tmp")
-            with open(test_file, "w", encoding="utf-8") as f:
-                f.write("ok")
-            os.remove(test_file)
-            return path
-        except Exception:
-            continue
-    fallback = os.path.join(tempfile.gettempdir(), "zhustock")
-    os.makedirs(fallback, exist_ok=True)
-    return fallback
-
-OUTPUT_DIR = get_safe_output_dir()
+OUTPUT_DIR = r"C:\Users\user\Desktop\zhustock"
 OUTPUT_XLSX = os.path.join(OUTPUT_DIR, "TWSE_ALL.xlsx")
 ICON_FILE = "zhu_stock_icon.ico"
 SNAPSHOT_DIR = os.path.join(OUTPUT_DIR, "snapshots")
-DAILY_CACHE_DIR = os.path.join(OUTPUT_DIR, "daily_cache")
 TREND_MEMORY_FILE = os.path.join(OUTPUT_DIR, "trend_memory.pkl")
 HOLDINGS_FILE = os.path.join(OUTPUT_DIR, "holdings.json")
-HOLDINGS_USERS_DIR = os.path.join(OUTPUT_DIR, "holdings_users")
 AUTH_SESSION_FILE = os.path.join(OUTPUT_DIR, "auth_session.json")
 DEVICE_INFO_FILE = os.path.join(OUTPUT_DIR, "device_info.json")
-REFERRAL_DB_FILE = os.path.join(OUTPUT_DIR, "referral_tree.json")
-REFERRAL_EXPORT_XLSX = os.path.join(OUTPUT_DIR, "ZHU_Referral_OrgChart.xlsx")
-AUTH_SERVER_BASE = "https://zhu-stock-app.onrender.com"
-MOBILE_STOCK_UPLOAD_URL = f"{AUTH_SERVER_BASE}/admin/upload-stock-results"
-MOBILE_STOCK_POOL_URL = f"{AUTH_SERVER_BASE}/mobile/stock-pools"
-MOBILE_WARRANT_URL = f"{AUTH_SERVER_BASE}/mobile/warrants"
-APP_VERSION = "2026.04.18.1"
-APP_SETTINGS_FILE = os.path.join(OUTPUT_DIR, "app_settings.json")
-APP_UPDATES_DIR = os.path.join(OUTPUT_DIR, "updates")
-APP_UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/xck8284/zhu-stock-app/main/app-version.json"
-AUTO_DAILY_UPDATE_HOUR = 14
-AUTO_DAILY_UPDATE_MINUTE = 20
-DEFAULT_APP_SETTINGS = {
-    "daily_auto_update": True,
-    "startup_check_update": True,
-    "last_daily_auto_update_date": "",
-    "last_skip_version": "",
-}
+AUTH_SERVER_BASE = "http://127.0.0.1:8000"
 
 PAYMENT_BANKS = [
     "元大銀行 / 806 / 20342720080940",
@@ -117,26 +58,6 @@ PAYMENT_PLAN_PRICES = {
     "halfyear": 14888,
     "yearly": 28888,
 }
-
-FEEDBACK_EMAIL = "xck8284@gmail.com"
-FEEDBACK_LOCAL_FILE = os.path.join(OUTPUT_DIR, "feedback_reports.json")
-
-WARRANT_PRIORITY_ISSUERS = ["元大", "元富", "永豐金", "統一", "國票", "凱基", "群益金鼎"]
-WARRANT_PRIORITY_ISSUERS_TEXT = "、".join(WARRANT_PRIORITY_ISSUERS)
-
-WARRANT_FASTSCAN_ACCESS_FILE = os.path.join(OUTPUT_DIR, "warrant_fastscan_access.json")
-WARRANT_WATCHLIST_FILE = os.path.join(OUTPUT_DIR, "warrant_watchlist.json")
-
-
-def get_plan_savings_text(plan_key):
-    monthly_price = PAYMENT_PLAN_PRICES.get("monthly", 0)
-    if plan_key == "halfyear":
-        save_amt = monthly_price * 6 - PAYMENT_PLAN_PRICES.get("halfyear", 0)
-        return f"半年訂閱：原價 {monthly_price * 6:,} 元，方案價 {PAYMENT_PLAN_PRICES.get('halfyear', 0):,} 元，現省 {save_amt:,} 元"
-    if plan_key == "yearly":
-        save_amt = monthly_price * 12 - PAYMENT_PLAN_PRICES.get("yearly", 0)
-        return f"年訂閱：原價 {monthly_price * 12:,} 元，方案價 {PAYMENT_PLAN_PRICES.get('yearly', 0):,} 元，現省 {save_amt:,} 元"
-    return f"月訂閱：每月 {monthly_price:,} 元"
 
 
 # 品牌圖檔：請把你的紅底「原」字圖放在程式同層或 OUTPUT_DIR
@@ -237,40 +158,23 @@ PAYMENT_NOTICE_TEXT = """ZHU STOCK APP 訂閱 / 付款前聲明
 八、匯款錯誤與例外情況
 若因您填寫錯誤、匯錯帳號、匯錯金額、重複匯款、未依規則通知、提供錯誤末五碼、使用非本人可辨識帳戶、或其他非管理端可控制因素而導致核對困難，管理端得視情況要求補充資料後再處理。
 
-九、付款後不提供退款
-本 APP 之付款，係由使用者於實際體驗、觀察、試用或理解本系統功能後，基於個人自由意願所作之付費使用決定。因會員權限一經開通、延長、設定或保留後，即涉及帳號授權、期間占用、管理處理及系統資源配置，故除非經營端另行書面同意，原則上付款後恕不退款。您在匯款前應自行審慎評估是否符合自身需求，並於付款前三思確認。
-
-十、推薦制度說明
-本 APP 提供推薦制度。若有朋友使用您的推薦碼完成註冊，並於體驗後決定成為付費會員，系統可依其實際訂閱方案提供推薦獎勵：
-1. 被推薦者訂閱半年方案者，額外贈送推薦者 1 個月使用權。
-2. 被推薦者訂閱年方案者，額外贈送推薦者 2 個月使用權。
-3. 推薦獎勵之發放時間、認定標準、是否生效、是否可併用活動，仍以管理端實際核對與設定結果為準。
-4. 若推薦資料不完整、推薦碼填寫錯誤、付款資料無法辨識、或有異常情況，管理端得保留調整、延後或不發放之權利。
-
-十一、顯示匯款帳號之條件
+九、顯示匯款帳號之條件
 本頁之匯款帳號資訊，僅提供給已閱讀並同意本聲明之使用者查看。若您不同意本聲明內容，請勿查看匯款帳號、請勿匯款，亦請勿要求開通任何付費權限。
 
-十二、最終確認
+十、最終確認
 當您按下「我同意，顯示匯款帳號」時，即表示您確認：
 1. 您是基於個人自由意願決定匯款。
 2. 您是因實際使用後覺得方便、實用或具有參考價值，才決定支持並申請會員權限。
 3. 您了解付款後仍需主動通知創作者或管理員進行人工核對。
-4. 您了解付款原則上不提供退款，付款前應自行三思。
-5. 您了解推薦獎勵需經管理端核對後始生效。
-6. 您了解付款僅涉及會員權限，不代表任何投資保證。
-7. 您了解所有投資行為仍由您自行判斷，盈虧自負。
+4. 您了解付款僅涉及會員權限，不代表任何投資保證。
+5. 您了解所有投資行為仍由您自行判斷，盈虧自負。
 
 若您不同意以上內容，請按「不同意，不顯示帳號」。"""
 
 REQUEST_TIMEOUT = 30
 REQUEST_RETRIES = 4
-HISTORY_FETCH_MAX_HARD_FAILURES = 3
-HISTORY_FETCH_RETRY_PER_DAY = 3
-HISTORY_FETCH_MIN_SUCCESS_RATIO = 0.90
-
-LAST_HISTORY_FETCH_WARNINGS = []
-SLEEP_SEC = 0.05
-MIN_WEEKLY_VOLUME = 50000
+SLEEP_SEC = 0.20
+MIN_WEEKLY_VOLUME = 10000
 
 LOOKBACK_WEEKS = 60
 MIN_PEAK_GAP = 4
@@ -302,227 +206,8 @@ HEADERS = {
     "Connection": "keep-alive",
 }
 
-def get_certifi_pem_path():
-    candidates = []
-    try:
-        candidates.append(certifi.where())
-    except Exception:
-        pass
-    runtime_dir = get_runtime_dir()
-    candidates.extend([
-        os.path.join(runtime_dir, "_internal", "certifi", "cacert.pem"),
-        os.path.join(runtime_dir, "certifi", "cacert.pem"),
-        os.path.join(getattr(sys, "_MEIPASS", runtime_dir), "certifi", "cacert.pem"),
-    ])
-    for p in candidates:
-        if p and os.path.exists(p):
-            return p
-    return True
-
-def build_session():
-    s = requests.Session()
-    s.headers.update(HEADERS)
-    try:
-        s.verify = get_certifi_pem_path()
-    except Exception:
-        pass
-    return s
-
-session = build_session()
-
-
-
-# =========================
-# 手機版資料同步：桌面版分析結果 → Render 後端 → Flutter APP
-# =========================
-def _mobile_json_value(v):
-    """把 pandas / datetime / numpy 等物件轉成 JSON 可傳輸格式。"""
-    try:
-        if pd.isna(v):
-            return ""
-    except Exception:
-        pass
-
-    if hasattr(v, "strftime"):
-        try:
-            return v.strftime("%Y-%m-%d")
-        except Exception:
-            return str(v)
-
-    try:
-        import numpy as np
-        if isinstance(v, (np.integer,)):
-            return int(v)
-        if isinstance(v, (np.floating,)):
-            return float(v)
-        if isinstance(v, (np.bool_,)):
-            return bool(v)
-    except Exception:
-        pass
-
-    if isinstance(v, (int, float, bool)):
-        return v
-
-    return clean_text(v)
-
-
-def _mobile_pick(row, keys, default=""):
-    for k in keys:
-        try:
-            if k in row:
-                val = _mobile_json_value(row.get(k))
-                if clean_text(val) != "":
-                    return val
-        except Exception:
-            pass
-    return default
-
-
-def mobile_format_stock_df(df, direction_label="看多", max_rows=500):
-    """把桌面版看多 / 看空 DataFrame 轉成手機 APP 顯示用資料。"""
-    if not isinstance(df, pd.DataFrame) or df.empty:
-        return []
-
-    out = []
-    work = df.copy().head(max_rows)
-
-    for _, row in work.iterrows():
-        item = {
-            "code": clean_text(_mobile_pick(row, ["股票代號", "stock_code", "code"])),
-            "name": clean_text(_mobile_pick(row, ["股票名稱", "stock_name", "name"])),
-            "industry": clean_text(_mobile_pick(row, ["產業別", "industry"])),
-            "settle_date": clean_text(_mobile_pick(row, ["週結算日期", "結算日期", "日期", "settle_date"])),
-            "stars": clean_text(_mobile_pick(row, ["星等", "stars"])),
-            "strong_score": _mobile_json_value(_mobile_pick(row, ["StrongScore", "強度分數", "score"], 0)),
-            "bias": _mobile_json_value(_mobile_pick(row, ["乖離率(%)", "乖離率", "bias"], 0)),
-            "short_alarm": clean_text(_mobile_pick(row, ["短線停利Alarm", "短線回補Alarm", "short_alarm"])),
-            "long_alarm": clean_text(_mobile_pick(row, ["長線停利Alarm", "長線回補Alarm", "long_alarm"])),
-            "direction": direction_label,
-        }
-        if item["code"]:
-            out.append(item)
-
-    return out
-
-
-def mobile_format_warrant_df(df, max_rows=1000):
-    """把桌面版權證 DataFrame 轉成手機 APP 顯示用資料。"""
-    if not isinstance(df, pd.DataFrame) or df.empty:
-        return []
-
-    out = []
-    work = df.copy().head(max_rows)
-
-    for _, row in work.iterrows():
-        item = {
-            "stock_code": clean_text(_mobile_pick(row, ["股票代號", "stock_code"])),
-            "stock_price": _mobile_json_value(_mobile_pick(row, ["標的現價", "標的股價", "stock_price"], "")),
-            "hv60": _mobile_json_value(_mobile_pick(row, ["標的HV60(%)", "標的HV60", "hv60"], "")),
-            "code": clean_text(_mobile_pick(row, ["權證代號", "warrant_code", "code"])),
-            "name": clean_text(_mobile_pick(row, ["權證名稱", "warrant_name", "name"])),
-            "type": clean_text(_mobile_pick(row, ["權證類型", "權證種類", "type"])),
-            "issuer": clean_text(_mobile_pick(row, ["發行銀行/券商", "發行券商", "issuer"])),
-            "strike": _mobile_json_value(_mobile_pick(row, ["履約價", "履約值", "strike"], "")),
-            "moneyness": _mobile_json_value(_mobile_pick(row, ["價外程度(%)", "價外程度", "moneyness"], "")),
-            "expiry": clean_text(_mobile_pick(row, ["到期日", "expiry"])),
-            "days_left": _mobile_json_value(_mobile_pick(row, ["剩餘天數", "days_left"], "")),
-            "price_text": clean_text(_mobile_pick(row, ["權證收盤/成交", "現價", "成交價", "price_text"])),
-            "ratio": clean_text(_mobile_pick(row, ["行使比例", "ratio"])),
-        }
-        if item["code"] or item["name"]:
-            out.append(item)
-
-    return out
-
-
-def build_mobile_upload_payload(result_dict=None, current_view_data=None):
-    """整理桌面版最新資料，組成 Render 後端接收的 payload。"""
-    result_dict = result_dict if isinstance(result_dict, dict) else {}
-    current_view_data = current_view_data if isinstance(current_view_data, dict) else {}
-
-    bullish_df = result_dict.get("CLIENT_BULLISH", pd.DataFrame())
-    bearish_df = result_dict.get("CLIENT_BEARISH", pd.DataFrame())
-
-    if not isinstance(bullish_df, pd.DataFrame) or bullish_df.empty:
-        bullish_df = result_dict.get("TRAINING_POOL", pd.DataFrame())
-    if not isinstance(bearish_df, pd.DataFrame) or bearish_df.empty:
-        bearish_df = result_dict.get("BEARISH_TRAINING_POOL", pd.DataFrame())
-
-    warrant_df = pd.DataFrame()
-    for key in [
-        "WARRANT_FASTSCAN_BULLISH",
-        "WARRANT_FASTSCAN_BEARISH",
-        "WARRANT_FASTSCAN",
-        "WARRANT_RESULT",
-        "WARRANTS",
-    ]:
-        obj = current_view_data.get(key, None)
-        if isinstance(obj, pd.DataFrame) and not obj.empty:
-            warrant_df = obj
-            break
-
-    if warrant_df.empty:
-        for key in ["WARRANT_FASTSCAN", "WARRANT_RESULT", "WARRANTS"]:
-            obj = result_dict.get(key, None)
-            if isinstance(obj, pd.DataFrame) and not obj.empty:
-                warrant_df = obj
-                break
-
-    return {
-        "settle_date": clean_text(result_dict.get("settle_date", "")),
-        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "source": "desktop_zhustock_app",
-        "bullish": mobile_format_stock_df(bullish_df, "看多"),
-        "bearish": mobile_format_stock_df(bearish_df, "看空"),
-        "warrants": mobile_format_warrant_df(warrant_df),
-    }
-
-
-def upload_mobile_stock_results(result_dict=None, current_view_data=None, logger=None, show_message=False):
-    """將看多 / 看空 / 權證資料同步到 Render，供手機 APP 讀取。"""
-    payload = build_mobile_upload_payload(result_dict, current_view_data=current_view_data)
-
-    try:
-        if logger:
-            logger(
-                f"[手機同步] 準備上傳：看多 {len(payload.get('bullish', []))} 檔｜"
-                f"看空 {len(payload.get('bearish', []))} 檔｜權證 {len(payload.get('warrants', []))} 筆"
-            )
-
-        r = requests.post(MOBILE_STOCK_UPLOAD_URL, json=payload, timeout=30)
-        r.raise_for_status()
-
-        try:
-            resp = r.json()
-        except Exception:
-            resp = {"raw": r.text}
-
-        if logger:
-            logger(f"[手機同步] 上傳成功：{resp}")
-
-        if show_message:
-            try:
-                messagebox.showinfo(
-                    "手機同步完成",
-                    f"已同步到手機版\n看多：{len(payload.get('bullish', []))} 檔\n"
-                    f"看空：{len(payload.get('bearish', []))} 檔\n權證：{len(payload.get('warrants', []))} 筆"
-                )
-            except Exception:
-                pass
-
-        return True
-
-    except Exception as e:
-        if logger:
-            logger(f"[手機同步] 上傳失敗：{e}")
-
-        if show_message:
-            try:
-                messagebox.showwarning("手機同步失敗", f"桌面資料已完成，但手機同步失敗：\n{e}")
-            except Exception:
-                pass
-
-        return False
+session = requests.Session()
+session.headers.update(HEADERS)
 
 
 # =========================
@@ -548,692 +233,6 @@ def ensure_dir_safe(path):
 def ensure_output_dir():
     ensure_dir_safe(OUTPUT_DIR)
     ensure_dir_safe(SNAPSHOT_DIR)
-    ensure_dir_safe(DAILY_CACHE_DIR)
-    ensure_dir_safe(APP_UPDATES_DIR)
-
-
-def load_json_file(path, default):
-    try:
-        if not os.path.exists(path):
-            return default.copy() if isinstance(default, dict) else default
-        with open(path, "r", encoding="utf-8") as f:
-            obj = json.load(f)
-        if isinstance(default, dict) and isinstance(obj, dict):
-            merged = default.copy()
-            merged.update(obj)
-            return merged
-        return obj
-    except Exception:
-        return default.copy() if isinstance(default, dict) else default
-
-
-def save_json_file(path, data):
-    folder = os.path.dirname(path)
-    if folder:
-        os.makedirs(folder, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-def load_warrant_fastscan_access_db():
-    ensure_output_dir()
-    data = load_json_file(WARRANT_FASTSCAN_ACCESS_FILE, {})
-    return data if isinstance(data, dict) else {}
-
-
-def save_warrant_fastscan_access_db(data):
-    ensure_output_dir()
-    save_json_file(WARRANT_FASTSCAN_ACCESS_FILE, data if isinstance(data, dict) else {})
-
-
-def get_warrant_fastscan_record(account):
-    account = clean_text(account).lower()
-    if not account:
-        return {}
-    db = load_warrant_fastscan_access_db()
-    rec = db.get(account, {})
-    return rec if isinstance(rec, dict) else {}
-
-
-def set_warrant_fastscan_record(account, record):
-    account = clean_text(account).lower()
-    if not account:
-        return
-    db = load_warrant_fastscan_access_db()
-    db[account] = record if isinstance(record, dict) else {}
-    save_warrant_fastscan_access_db(db)
-
-def get_warrant_watchlist_file(account=""):
-    ensure_output_dir()
-    owner = normalize_holdings_owner(account) if account else "guest"
-    return os.path.join(OUTPUT_DIR, f"warrant_watchlist_{owner}.json")
-
-
-def load_warrant_watchlist(account=""):
-    path = get_warrant_watchlist_file(account)
-    data = load_json_file(path, [])
-    if not isinstance(data, list):
-        return []
-    out = []
-    for x in data:
-        code = normalize_code(str(x))
-        if is_valid_stock_code(code) and code not in out:
-            out.append(code)
-    return out
-
-
-def save_warrant_watchlist(codes, account=""):
-    codes = [normalize_code(str(x)) for x in codes if is_valid_stock_code(normalize_code(str(x)))]
-    codes = list(dict.fromkeys(codes))
-    save_json_file(get_warrant_watchlist_file(account), codes)
-
-
-def parse_date_any(x):
-    s = clean_text(x)
-    if not s:
-        return None
-    s = s.replace(".", "/").replace("-", "/")
-    for fmt in ["%Y/%m/%d", "%Y%m%d"]:
-        try:
-            return datetime.strptime(s[:10] if fmt == "%Y/%m/%d" else s[:8], fmt).date()
-        except Exception:
-            pass
-    m = re.search(r"(\d{2,3})/(\d{1,2})/(\d{1,2})", s)
-    if m:
-        try:
-            y = int(m.group(1))
-            if y < 1911:
-                y += 1911
-            return datetime(y, int(m.group(2)), int(m.group(3))).date()
-        except Exception:
-            return None
-    return None
-
-
-
-def parse_percent_any(x):
-    s = clean_text(x)
-    if not s:
-        return None
-    s = s.replace("％", "%").replace(",", "")
-    m = re.search(r'[-+]?\d+(?:\.\d+)?', s)
-    if not m:
-        return None
-    try:
-        return float(m.group(0))
-    except Exception:
-        return None
-
-def calc_hv_60_from_weekly(result_dict, stock_code):
-    try:
-        raw = (result_dict or {}).get("WEEKLY_MA_RAW", pd.DataFrame())
-        if not isinstance(raw, pd.DataFrame) or raw.empty:
-            return None
-        sub = raw[raw["股票代號"].astype(str) == str(stock_code)].copy()
-        if sub.empty or "週收盤價" not in sub.columns:
-            return None
-        sub = sub.sort_values("週結算日期")
-        closes = pd.to_numeric(sub["週收盤價"], errors="coerce").dropna()
-        if len(closes) < 12:
-            return None
-        ret = closes.pct_change().dropna().tail(60)
-        if len(ret) < 10:
-            return None
-        return round(float(ret.std() * (252 ** 0.5) * 100), 2)
-    except Exception:
-        return None
-
-
-def _pick_col(columns, keywords):
-    for c in columns:
-        cs = clean_text(c)
-        if all(k in cs for k in keywords):
-            return c
-    return None
-
-
-
-def infer_issuer_from_warrant_name(name):
-    """從權證簡稱推估發行券商/銀行。
-    多數權證簡稱格式會把發行商放在標的名稱後面，例如：台積電元大57購01。
-    """
-    name = clean_text(name)
-    issuers = [
-        "元大", "元富", "永豐金", "永豐", "統一", "國票", "凱基", "群益金鼎", "群益",
-        "國泰", "富邦", "台新", "兆豐", "中國信託", "中信", "玉山", "第一", "華南",
-        "康和", "宏遠", "日盛", "新光", "合庫", "台企", "臺銀", "上海",
-        "元大證", "富邦證", "國泰證", "凱基證", "群益證", "永豐金證", "元富證", "統一證", "國票證"
-    ]
-    for issuer in sorted(issuers, key=len, reverse=True):
-        if issuer and issuer in name:
-            mapping = {
-                "群益金鼎": "群益金鼎",
-                "群益證": "群益",
-                "永豐金證": "永豐金",
-                "元大證": "元大",
-                "富邦證": "富邦",
-                "國泰證": "國泰",
-                "凱基證": "凱基",
-                "元富證": "元富",
-                "統一證": "統一",
-                "國票證": "國票",
-                "中國信託": "中信",
-            }
-            return mapping.get(issuer, issuer)
-    return ""
-
-
-def infer_expiry_from_warrant_name(name, today=None):
-    """用台灣權證簡稱內的年月碼推估到期日。
-    例：元大57購01 ≈ 民國115年7月月底；5A=10月、5B=11月、5C=12月。
-    若網站有明確到期日，會優先使用網站日期；這只是備援。
-    """
-    name = clean_text(name)
-    today = today or datetime.now().date()
-    m = re.search(r'([0-9])([1-9ABC])\s*(?:購|售)', name, flags=re.I)
-    if not m:
-        return None
-    y_digit = int(m.group(1))
-    m_code = m.group(2).upper()
-    month_map = {"A": 10, "B": 11, "C": 12}
-    month = month_map.get(m_code, None)
-    if month is None:
-        try:
-            month = int(m_code)
-        except Exception:
-            return None
-    candidates = []
-    for ad_year in range(today.year - 1, today.year + 5):
-        roc_year = ad_year - 1911
-        if roc_year % 10 == y_digit:
-            if month == 12:
-                last_day = 31
-            else:
-                next_month = datetime(ad_year, month + 1, 1).date()
-                last_day = (next_month - timedelta(days=1)).day
-            d = datetime(ad_year, month, last_day).date()
-            candidates.append(d)
-    future = [d for d in candidates if d >= today]
-    return min(future) if future else (max(candidates) if candidates else None)
-
-
-def _append_warrant_row(rows, target_code, wcode, wname, wtype, issuer, strike, expiry, days_left,
-                        stock_price=None, hv60=None, price_text="", ratio_text="", site_moneyness=None):
-    wcode = clean_text(wcode)
-    wname = clean_text(wname)
-    if not wcode and not wname:
-        return
-    if not wtype:
-        raw = wname + " " + wcode
-        if "售" in raw:
-            wtype = "認售"
-        elif "購" in raw:
-            wtype = "認購"
-        else:
-            wtype = "認購/認售"
-    issuer = clean_text(issuer) or infer_issuer_from_warrant_name(wname)
-
-    moneyness = None
-    if stock_price and strike:
-        try:
-            if wtype == "認售":
-                moneyness = (float(stock_price) / float(strike) - 1.0) * 100.0
-            else:
-                moneyness = (float(strike) / float(stock_price) - 1.0) * 100.0
-        except Exception:
-            moneyness = None
-    if moneyness is None and site_moneyness is not None:
-        moneyness = site_moneyness
-
-    # 後端篩選：剩餘天數 90 天以上、價外 10%～15%。
-    if days_left not in [None, ""]:
-        try:
-            if int(float(days_left)) < 90:
-                return
-        except Exception:
-            pass
-    if moneyness not in [None, ""]:
-        try:
-            mv = float(moneyness)
-            if mv < 10 or mv > 15:
-                return
-        except Exception:
-            pass
-
-    rows.append({
-        "股票代號": target_code,
-        "標的現價": stock_price if stock_price is not None else "",
-        "標的HV60(%)": hv60 if hv60 is not None else "",
-        "權證代號": wcode,
-        "權證名稱": wname,
-        "權證類型": wtype,
-        "發行銀行/券商": issuer,
-        "履約價": strike if strike is not None else "",
-        "價外程度(%)": round(float(moneyness), 2) if moneyness not in [None, ""] else "",
-        "到期日": expiry.strftime("%Y-%m-%d") if hasattr(expiry, "strftime") else clean_text(expiry),
-        "剩餘天數": int(days_left) if str(days_left).replace('.', '', 1).isdigit() else (days_left if days_left is not None else ""),
-        "權證收盤/成交": clean_text(price_text),
-        "行使比例": clean_text(ratio_text),
-    })
-
-
-def _normalize_warrant_table(df, target_code, stock_price=None, hv60=None):
-    if df is None or df.empty:
-        return pd.DataFrame()
-    work = df.copy()
-    work.columns = [clean_text(c) for c in work.columns]
-    cols = list(work.columns)
-    code_col = _pick_col(cols, ["權證", "代號"]) or _pick_col(cols, ["代號"])
-    name_col = _pick_col(cols, ["權證", "名稱"]) or _pick_col(cols, ["名稱"])
-    issuer_col = _pick_col(cols, ["發行", "人"]) or _pick_col(cols, ["發行", "商"]) or _pick_col(cols, ["券商"]) or _pick_col(cols, ["發行", "銀行"])
-    underlying_col = _pick_col(cols, ["標的", "代號"]) or _pick_col(cols, ["標的"])
-    strike_col = _pick_col(cols, ["履約", "價"]) or _pick_col(cols, ["行使", "價"])
-    expiry_col = _pick_col(cols, ["到期"]) or _pick_col(cols, ["最後", "交易"])
-    type_col = _pick_col(cols, ["類型"]) or _pick_col(cols, ["種類"])
-    price_col = _pick_col(cols, ["收盤"]) or _pick_col(cols, ["成交", "價"]) or _pick_col(cols, ["成交"])
-    ratio_col = _pick_col(cols, ["行使", "比例"]) or _pick_col(cols, ["履約", "比例"])
-    moneyness_col = _pick_col(cols, ["價外"]) or _pick_col(cols, ["價內外"])
-    days_col = _pick_col(cols, ["剩餘", "天"]) or _pick_col(cols, ["天數"])
-
-    rows = []
-    today = datetime.now().date()
-    for _, r in work.iterrows():
-        under = clean_text(r.get(underlying_col, "")) if underlying_col else ""
-        row_text = " ".join(clean_text(v) for v in r.astype(str).tolist())
-        if target_code and target_code not in under and target_code not in row_text:
-            continue
-        wname = clean_text(r.get(name_col, "")) if name_col else ""
-        wcode = clean_text(r.get(code_col, "")) if code_col else ""
-        if not re.search(r'\d{5,6}', wcode) and not re.search(r'(購|售)', wname):
-            continue
-        expiry = parse_date_any(r.get(expiry_col, "")) if expiry_col else None
-        if expiry is None:
-            expiry = infer_expiry_from_warrant_name(wname, today=today)
-        days_left = (expiry - today).days if expiry else None
-        if days_col:
-            dval = parse_number(r.get(days_col, ""), is_int=True)
-            if dval is not None:
-                days_left = dval
-        strike = parse_number(r.get(strike_col, "")) if strike_col else None
-        wtype_raw = clean_text(r.get(type_col, "")) if type_col else (wname + " " + wcode)
-        if "售" in wtype_raw:
-            wtype = "認售"
-        elif "購" in wtype_raw:
-            wtype = "認購"
-        else:
-            wtype = "認購/認售"
-        site_m = parse_number(r.get(moneyness_col, "")) if moneyness_col else None
-        _append_warrant_row(
-            rows, target_code, wcode, wname, wtype,
-            clean_text(r.get(issuer_col, "")) if issuer_col else "",
-            strike, expiry, days_left,
-            stock_price=stock_price, hv60=hv60,
-            price_text=clean_text(r.get(price_col, "")) if price_col else "",
-            ratio_text=clean_text(r.get(ratio_col, "")) if ratio_col else "",
-            site_moneyness=site_m,
-        )
-    return pd.DataFrame(rows)
-
-
-def _parse_warrantwin_text(html, target_code, stock_price=None, hv60=None):
-    """備援解析元大權證網搜尋頁。
-    該頁面多數資料不是標準 HTML table，因此 pd.read_html 抓不到時會空白；
-    這裡改用文字區塊解析，至少可抓出權證代號、名稱、券商、履約價、行使比例、價外程度。
-    """
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        text = soup.get_text("\n", strip=True)
-    except Exception:
-        text = clean_text(html)
-    if not text:
-        return pd.DataFrame()
-
-    rows = []
-    today = datetime.now().date()
-    matches = list(re.finditer(r'(?m)(^|\n|\s)(\d{5,6}[A-Z]?)\s*[\.．]?\s*\n?\s*([^\n]{2,40}?(?:購|售)[0-9A-Z]{2,4})', text))
-    for idx, m in enumerate(matches):
-        wcode = clean_text(m.group(2))
-        wname = clean_text(m.group(3))
-        seg_end = matches[idx + 1].start() if idx + 1 < len(matches) else min(len(text), m.end() + 1200)
-        seg = text[m.end():seg_end]
-        wtype = "認售" if "售" in wname else "認購" if "購" in wname else "認購/認售"
-        issuer = infer_issuer_from_warrant_name(wname)
-        strike = None
-        sm = re.search(r'履約價\s*([0-9]+(?:\.[0-9]+)?)', seg)
-        if sm:
-            strike = parse_number(sm.group(1))
-        ratio = ""
-        rm = re.search(r'行使比例\s*([0-9]+(?:\.[0-9]+)?)', seg)
-        if rm:
-            ratio = rm.group(1)
-        site_m = None
-        mm = re.search(r'([0-9]+(?:\.[0-9]+)?)\s*價外', seg)
-        if mm:
-            site_m = parse_number(mm.group(1))
-        price_text = ""
-        pm = re.search(r'成交價\s*([0-9]+(?:\.[0-9]+)?|--|-)', seg)
-        if pm:
-            price_text = pm.group(1)
-        expiry = parse_date_any(seg) or infer_expiry_from_warrant_name(wname, today=today)
-        days_left = (expiry - today).days if expiry else None
-        dm = re.search(r'剩餘天數\s*([0-9]+)', seg)
-        if dm:
-            days_left = int(dm.group(1))
-        _append_warrant_row(rows, target_code, wcode, wname, wtype, issuer, strike, expiry, days_left,
-                            stock_price=stock_price, hv60=hv60, price_text=price_text, ratio_text=ratio,
-                            site_moneyness=site_m)
-    return pd.DataFrame(rows)
-
-
-
-def _flatten_json_records(obj):
-    """把 OpenAPI / JSON 回傳整理成 list[dict]，避免不同來源包裝格式不同造成空白。"""
-    if isinstance(obj, list):
-        return [x for x in obj if isinstance(x, dict)]
-    if isinstance(obj, dict):
-        for key in ["data", "records", "result", "items", "aaData"]:
-            val = obj.get(key)
-            if isinstance(val, list):
-                return [x for x in val if isinstance(x, dict)]
-        for val in obj.values():
-            if isinstance(val, list) and val and isinstance(val[0], dict):
-                return [x for x in val if isinstance(x, dict)]
-    return []
-
-
-def _normalize_warrant_openapi_records(records, target_code, stock_price=None, hv60=None):
-    """解析證交所/櫃買 OpenAPI 權證每日成交資料。"""
-    if not records:
-        return pd.DataFrame()
-    df = pd.DataFrame(records)
-    if df.empty:
-        return pd.DataFrame()
-    df.columns = [clean_text(c) for c in df.columns]
-    cols = list(df.columns)
-    code_col = _pick_col(cols, ["權證", "代號"]) or _pick_col(cols, ["證券", "代號"])
-    name_col = _pick_col(cols, ["權證", "名稱"]) or _pick_col(cols, ["權證", "簡稱"]) or _pick_col(cols, ["證券", "名稱"]) or _pick_col(cols, ["證券", "簡稱"])
-    issuer_col = (_pick_col(cols, ["發行", "人"]) or _pick_col(cols, ["發行", "商"]) or _pick_col(cols, ["發行", "銀行"]) or _pick_col(cols, ["券商"]) or _pick_col(cols, ["流動量", "提供者"]))
-    underlying_col = (_pick_col(cols, ["標的", "證券", "代號"]) or _pick_col(cols, ["標的", "代號"]) or _pick_col(cols, ["標的", "股", "代號"]) or _pick_col(cols, ["連結", "代號"]) or _pick_col(cols, ["標的"]))
-    strike_col = _pick_col(cols, ["履約", "價"]) or _pick_col(cols, ["行使", "價"]) or _pick_col(cols, ["最新", "履約"])
-    expiry_col = _pick_col(cols, ["到期", "日期"]) or _pick_col(cols, ["到期日"]) or _pick_col(cols, ["最後", "交易"])
-    type_col = _pick_col(cols, ["認購", "認售"]) or _pick_col(cols, ["權證", "類型"]) or _pick_col(cols, ["權證", "種類"]) or _pick_col(cols, ["發行", "型態"])
-    price_col = _pick_col(cols, ["收盤", "價"]) or _pick_col(cols, ["成交", "價"]) or _pick_col(cols, ["權證", "收盤"])
-    ratio_col = _pick_col(cols, ["行使", "比例"]) or _pick_col(cols, ["履約", "比例"])
-    moneyness_col = _pick_col(cols, ["價外"]) or _pick_col(cols, ["價內外"])
-    days_col = _pick_col(cols, ["剩餘", "天"]) or _pick_col(cols, ["距到期", "天"])
-    rows = []
-    today = datetime.now().date()
-    target_code = normalize_code(target_code)
-    for _, r in df.iterrows():
-        row_text = " ".join(clean_text(v) for v in r.astype(str).tolist())
-        under = clean_text(r.get(underlying_col, "")) if underlying_col else ""
-        if target_code and target_code not in under and target_code not in row_text:
-            continue
-        wcode = clean_text(r.get(code_col, "")) if code_col else ""
-        wname = clean_text(r.get(name_col, "")) if name_col else ""
-        if not wcode:
-            m = re.search(r'\b(\d{5,6}[A-Z]?)\b', row_text)
-            wcode = m.group(1) if m else ""
-        if not wname:
-            m = re.search(r'([^\s,，;；]{2,30}(?:購|售)[0-9A-Z]{1,5})', row_text)
-            wname = m.group(1) if m else ""
-        if not re.search(r'\d{5,6}', wcode) and not re.search(r'(購|售)', wname):
-            continue
-        expiry = parse_date_any(r.get(expiry_col, "")) if expiry_col else None
-        if expiry is None:
-            expiry = infer_expiry_from_warrant_name(wname, today=today)
-        days_left = (expiry - today).days if expiry else None
-        if days_col:
-            dval = parse_number(r.get(days_col, ""), is_int=True)
-            if dval is not None:
-                days_left = dval
-        strike = parse_number(r.get(strike_col, "")) if strike_col else None
-        raw_type = clean_text(r.get(type_col, "")) if type_col else (wname + " " + row_text)
-        if "售" in raw_type:
-            wtype = "認售"
-        elif "購" in raw_type:
-            wtype = "認購"
-        else:
-            wtype = "認購/認售"
-        site_m = parse_number(r.get(moneyness_col, "")) if moneyness_col else None
-        _append_warrant_row(rows, target_code, wcode, wname, wtype, clean_text(r.get(issuer_col, "")) if issuer_col else "", strike, expiry, days_left, stock_price=stock_price, hv60=hv60, price_text=clean_text(r.get(price_col, "")) if price_col else "", ratio_text=clean_text(r.get(ratio_col, "")) if ratio_col else "", site_moneyness=site_m)
-    return pd.DataFrame(rows)
-
-
-def fetch_warrants_from_openapi(target_code, stock_price=None, hv60=None, logger=None):
-    """優先使用交易所 OpenAPI 抓完整市場權證資料，再依標的代號篩選。"""
-    frames = []
-    urls = [
-        "https://openapi.twse.com.tw/v1/opendata/t187ap47_L",
-        "https://www.tpex.org.tw/openapi/v1/t187ap47_O",
-        "https://openapi.tpex.org.tw/v1/t187ap47_O",
-    ]
-    for url in urls:
-        try:
-            r = safe_get(url, timeout=25)
-            try:
-                obj = r.json()
-            except Exception:
-                obj = json.loads(r.text)
-            records = _flatten_json_records(obj)
-            df = _normalize_warrant_openapi_records(records, target_code, stock_price=stock_price, hv60=hv60)
-            if df is not None and not df.empty:
-                frames.append(df)
-                if logger:
-                    logger(f"[權證] OpenAPI 來源成功：{url}，{target_code} 筆數={len(df)}")
-        except Exception as e:
-            if logger:
-                logger(f"[權證] OpenAPI 來源失敗：{url}｜{e}")
-    if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
-
-
-
-def _parse_moneylink_warrant_html(html, target_code, stock_price=None, hv60=None):
-    rows = []
-    today = datetime.now().date()
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        text = soup.get_text("\n", strip=True)
-    except Exception:
-        text = clean_text(html)
-    if not text:
-        return pd.DataFrame()
-    pattern = re.compile(
-        r'(?P<code>\d{5}[A-Z]?)\s+'
-        r'(?P<name>[^\s\n]{2,40}?(?:購|售)\d{1,3})\s*'
-        r'(?P<type>認購|認售)\s*'
-        r'(?P<body>.{0,180}?)'
-        r'(?P<expiry>20\d{6})\s+'
-        r'(?P<strike>\d+(?:\.\d+)?)\s+'
-        r'(?P<ratio>\d+(?:\.\d+)?)\s*'
-        r'(?P<money>[-+]?\d+(?:\.\d+)?)%\s*'
-        r'(?P<label>價外|價內|價平)',
-        re.S
-    )
-    for m in pattern.finditer(text):
-        wcode = clean_text(m.group('code'))
-        wname = clean_text(m.group('name'))
-        wtype = clean_text(m.group('type'))
-        body = clean_text(m.group('body'))
-        expiry = parse_date_any(m.group('expiry'))
-        days_left = (expiry - today).days if expiry else None
-        strike = parse_number(m.group('strike'))
-        ratio = clean_text(m.group('ratio'))
-        money_raw = parse_percent_any(m.group('money'))
-        label = clean_text(m.group('label'))
-        if label == "價外":
-            site_m = abs(money_raw) if money_raw is not None else None
-        elif label == "價平":
-            site_m = 0.0
-        else:
-            site_m = -abs(money_raw) if money_raw is not None else None
-        price_text = ""
-        pm = re.search(r'(?<!\d)(\d+\.\d+)(?:[△▽▲▼]|\s)', body)
-        if pm:
-            price_text = pm.group(1)
-        _append_warrant_row(rows, target_code, wcode, wname, wtype, infer_issuer_from_warrant_name(wname), strike, expiry, days_left, stock_price=stock_price, hv60=hv60, price_text=price_text, ratio_text=ratio, site_moneyness=site_m)
-    return pd.DataFrame(rows)
-
-def fetch_warrants_from_moneylink(target_code, stock_price=None, hv60=None, logger=None):
-    target_code = normalize_code(target_code)
-    urls = [
-        f"https://www.moneylink.com.tw/TWStock/StockWar.aspx?SymId={target_code}",
-        f"https://ww2.money-link.com.tw/TWStock/StockWar.aspx?SymId={target_code}",
-    ]
-    frames = []
-    for url in urls:
-        try:
-            html = safe_get(url, timeout=25).text
-            df = _parse_moneylink_warrant_html(html, target_code, stock_price=stock_price, hv60=hv60)
-            if df is not None and not df.empty:
-                frames.append(df)
-                if logger:
-                    logger(f"[權證] MoneyLink 來源成功：{target_code} 筆數={len(df)}")
-                break
-        except Exception as e:
-            if logger:
-                logger(f"[權證] MoneyLink 來源失敗：{url}｜{e}")
-    if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
-
-def fetch_warrants_for_stock(target_code, stock_price=None, hv60=None, logger=None):
-    target_code = normalize_code(target_code)
-    columns = ["項次", "股票代號", "標的現價", "標的HV60(%)", "權證代號", "權證名稱", "權證類型", "發行銀行/券商", "履約價", "價外程度(%)", "到期日", "剩餘天數", "權證收盤/成交", "行使比例"]
-    frames = []
-    # 第一優先：MoneyLink。此來源可直接用標的代號列出相關權證，避免券商動態頁抓到空殼。
-    try:
-        ml_df = fetch_warrants_from_moneylink(target_code, stock_price=stock_price, hv60=hv60, logger=logger)
-        if ml_df is not None and not ml_df.empty:
-            frames.append(ml_df)
-    except Exception as e:
-        if logger:
-            logger(f"[權證] MoneyLink 主來源解析失敗：{e}")
-
-    # 第二優先：證交所/櫃買 OpenAPI。
-    try:
-        api_df = fetch_warrants_from_openapi(target_code, stock_price=stock_price, hv60=hv60, logger=logger)
-        if api_df is not None and not api_df.empty:
-            frames.append(api_df)
-    except Exception as e:
-        if logger:
-            logger(f"[權證] OpenAPI 主來源解析失敗：{e}")
-
-    urls = [
-        f"https://www.warrantwin.com.tw/eyuanta/Warrant/Search.aspx?SID={target_code}",
-        f"https://mops.twse.com.tw/mops/web/t90sbfa01?TYPEK=all&stockNo={target_code}",
-        f"https://mops.twse.com.tw/mops/web/t90sbfa01?encodeURIComponent=1&step=1&firstin=1&stockNo={target_code}",
-        f"https://mops.twse.com.tw/mops/web/t90sbfa07?TYPEK=all&stockNo={target_code}",
-        f"https://warrant.cathaysec.com.tw/WarrantsSearch.aspx?Underlying={target_code}",
-        f"https://www.warrantwin.com.tw/eyuanta/Warrant/Search.aspx?StockId={target_code}",
-        f"https://warrant.pscnet.com.tw/wSearch.aspx?stock={target_code}",
-        f"https://warrant.kgi.com/edwebsite/views/warrantsearch/warrantsearch.aspx?stock={target_code}",
-    ]
-    for url in urls:
-        try:
-            html = safe_get(url, timeout=20).text
-            if "warrantwin.com.tw" in url:
-                txt_df = _parse_warrantwin_text(html, target_code, stock_price=stock_price, hv60=hv60)
-                if txt_df is not None and not txt_df.empty:
-                    frames.append(txt_df)
-            try:
-                tables = pd.read_html(html)
-            except Exception:
-                tables = []
-            for tbl in tables:
-                norm = _normalize_warrant_table(tbl, target_code, stock_price=stock_price, hv60=hv60)
-                if norm is not None and not norm.empty:
-                    frames.append(norm)
-        except Exception as e:
-            if logger:
-                logger(f"[權證] {target_code} 資料來源嘗試失敗：{e}")
-    if not frames:
-        return pd.DataFrame(columns=columns)
-    out = pd.concat(frames, ignore_index=True)
-    if "發行銀行/券商" in out.columns:
-        out["發行銀行/券商"] = out.apply(lambda r: clean_text(r.get("發行銀行/券商", "")) or infer_issuer_from_warrant_name(r.get("權證名稱", "")), axis=1)
-    out = out.drop_duplicates(subset=["權證代號", "權證名稱", "到期日"], keep="first")
-    out["_days"] = pd.to_numeric(out.get("剩餘天數"), errors="coerce")
-    out["_m"] = pd.to_numeric(out.get("價外程度(%)"), errors="coerce")
-    out = out[(out["_days"].isna()) | (out["_days"] >= 90)].copy()
-    out = out[(out["_m"].isna()) | ((out["_m"] >= 0) & (out["_m"] <= 15))].copy()
-    out = out.sort_values(["股票代號", "_m", "_days", "發行銀行/券商"], ascending=[True, True, False, True]).drop(columns=["_days", "_m"], errors="ignore").reset_index(drop=True)
-    if "項次" in out.columns:
-        out = out.drop(columns=["項次"])
-    out.insert(0, "項次", range(1, len(out) + 1))
-    for c in columns:
-        if c not in out.columns:
-            out[c] = ""
-    return out[columns]
-
-def calc_star_value(star_text):
-    s = clean_text(star_text)
-    return max(s.count('★'), s.count('*'))
-
-
-def build_warrant_fastscan_candidates(result_dict):
-    result_dict = result_dict if isinstance(result_dict, dict) else {}
-    bullish = result_dict.get('TRAINING_POOL', pd.DataFrame())
-    bearish = result_dict.get('BEARISH_TRAINING_POOL', pd.DataFrame())
-
-    def _build(df, direction_label, warrant_type):
-        if not isinstance(df, pd.DataFrame) or df.empty:
-            return pd.DataFrame(columns=[
-                '項次', '股票代號', '股票名稱', '產業別', '週結算日期',
-                '星等', 'StrongScore', '乖離率(%)', '權證方向', '權證類型', '優先券商'
-            ])
-
-        work = df.copy()
-        if '星等數值' in work.columns:
-            work['_star_value_'] = pd.to_numeric(work['星等數值'], errors='coerce').fillna(0)
-        else:
-            work['_star_value_'] = work.get('星等', '').apply(calc_star_value) if '星等' in work.columns else 0
-        work['_score_'] = pd.to_numeric(work.get('StrongScore'), errors='coerce')
-        work['_bias_'] = pd.to_numeric(work.get('乖離率(%)'), errors='coerce')
-
-        work = work[(work['_star_value_'] >= 5) & (work['_score_'] >= 100) & (work['_bias_'] < 50)].copy()
-        if work.empty:
-            return pd.DataFrame(columns=[
-                '項次', '股票代號', '股票名稱', '產業別', '週結算日期',
-                '星等', 'StrongScore', '乖離率(%)', '權證方向', '權證類型', '優先券商'
-            ])
-
-        sort_cols = [c for c in ['_score_', '_bias_', '股票代號'] if c in work.columns]
-        asc = [False, True, True][:len(sort_cols)]
-        work = work.sort_values(sort_cols, ascending=asc, kind='mergesort').reset_index(drop=True)
-        out = pd.DataFrame({
-            '項次': range(1, len(work) + 1),
-            '股票代號': work.get('股票代號', '').astype(str),
-            '股票名稱': work.get('股票名稱', '').astype(str),
-            '產業別': work.get('產業別', '').astype(str),
-            '週結算日期': work.get('週結算日期', '').astype(str),
-            '星等': work.get('星等', '').astype(str),
-            'StrongScore': work['_score_'].round(2),
-            '乖離率(%)': work['_bias_'].round(2),
-            '權證方向': direction_label,
-            '權證類型': warrant_type,
-            '優先券商': WARRANT_PRIORITY_ISSUERS_TEXT,
-        })
-        return out
-
-    return {
-        'bullish': _build(bullish, '看多', '認購'),
-        'bearish': _build(bearish, '看空', '認售'),
-    }
-
-def load_app_settings():
-    ensure_output_dir()
-    return load_json_file(APP_SETTINGS_FILE, DEFAULT_APP_SETTINGS)
-
-
-def save_app_settings(settings):
-    ensure_output_dir()
-    merged = DEFAULT_APP_SETTINGS.copy()
-    if isinstance(settings, dict):
-        merged.update(settings)
-    save_json_file(APP_SETTINGS_FILE, merged)
 
 
 def get_snapshot_path(settle_date):
@@ -1262,82 +261,22 @@ def rebuild_session():
         session.close()
     except Exception:
         pass
-    session = build_session()
+    session = requests.Session()
+    session.headers.update(HEADERS)
 
 
 def safe_get(url, params=None, timeout=REQUEST_TIMEOUT):
     last_err = None
-    verify_path = get_certifi_pem_path()
     for attempt in range(1, REQUEST_RETRIES + 1):
         try:
-            r = session.get(url, params=params, timeout=timeout, verify=verify_path)
+            r = session.get(url, params=params, timeout=timeout)
             r.raise_for_status()
             return r
-        except requests.exceptions.SSLError as e:
-            last_err = e
-            try:
-                r = session.get(url, params=params, timeout=timeout, verify=False)
-                r.raise_for_status()
-                return r
-            except Exception as insecure_e:
-                last_err = insecure_e
-                time.sleep(0.8 * attempt)
-                rebuild_session()
         except Exception as e:
             last_err = e
             time.sleep(0.8 * attempt)
             rebuild_session()
-    raise RuntimeError(
-        f"HTTPS 連線失敗：{last_err}\n"
-        "若為使用者電腦環境造成的 SSL 憑證問題，本版已自動嘗試回退連線；"
-        "若仍失敗，請檢查防毒軟體、公司網路或系統時間是否攔截 HTTPS。"
-    )
-
-
-
-
-def get_daily_cache_path(market, date_obj):
-    ensure_output_dir()
-    safe_market = clean_text(market).replace("/", "_") or "market"
-    return os.path.join(DAILY_CACHE_DIR, f"{safe_market}_{date_obj.strftime('%Y%m%d')}.pkl")
-
-
-def load_daily_cache(market, date_obj):
-    path = get_daily_cache_path(market, date_obj)
-    if not os.path.exists(path):
-        return None
-    try:
-        df = pd.read_pickle(path)
-        if isinstance(df, pd.DataFrame) and not df.empty:
-            return df
-    except Exception:
-        try:
-            os.remove(path)
-        except Exception:
-            pass
-    return None
-
-
-def save_daily_cache(market, date_obj, df):
-    if not isinstance(df, pd.DataFrame) or df.empty:
-        return
-    try:
-        df.to_pickle(get_daily_cache_path(market, date_obj))
-    except Exception:
-        pass
-
-
-def fetch_market_daily_all_cached(market, date_obj):
-    cached = load_daily_cache(market, date_obj)
-    if cached is not None and not cached.empty:
-        return cached.copy()
-    if market == "上市":
-        df = fetch_twse_daily_all(date_obj)
-    else:
-        df = fetch_tpex_daily_all(date_obj)
-    if isinstance(df, pd.DataFrame) and not df.empty:
-        save_daily_cache(market, date_obj, df)
-    return df
+    raise last_err
 
 
 def clean_text(x):
@@ -1515,29 +454,12 @@ def get_effective_reference_today():
 # =========================
 # 持股清單
 # =========================
-def normalize_holdings_owner(account=""):
-    raw = clean_text(account or "")
-    if not raw:
-        return "guest"
-    safe = re.sub(r'[^A-Za-z0-9_.@-]+', '_', raw)
-    safe = safe.strip('._')
-    return safe or "guest"
-
-
-def get_holdings_file(account=""):
+def load_holdings():
     ensure_output_dir()
-    os.makedirs(HOLDINGS_USERS_DIR, exist_ok=True)
-    owner = normalize_holdings_owner(account)
-    return os.path.join(HOLDINGS_USERS_DIR, f"holdings_{owner}.json")
-
-
-def load_holdings(account=""):
-    ensure_output_dir()
-    holding_path = get_holdings_file(account) if account else HOLDINGS_FILE
-    if not os.path.exists(holding_path):
+    if not os.path.exists(HOLDINGS_FILE):
         return []
     try:
-        with open(holding_path, "r", encoding="utf-8") as f:
+        with open(HOLDINGS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
             out = []
@@ -1551,12 +473,11 @@ def load_holdings(account=""):
         return []
 
 
-def save_holdings(codes, account=""):
+def save_holdings(codes):
     ensure_output_dir()
     codes = [normalize_code(str(x)) for x in codes if is_valid_stock_code(normalize_code(str(x)))]
     codes = list(dict.fromkeys(codes))
-    holding_path = get_holdings_file(account) if account else HOLDINGS_FILE
-    with open(holding_path, "w", encoding="utf-8") as f:
+    with open(HOLDINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(codes, f, ensure_ascii=False, indent=2)
 
 
@@ -1708,7 +629,7 @@ def is_snapshot_compatible(snapshot_obj):
     if raw.empty:
         return False
 
-    bull_need = ["星等", "StrongScore", "乖離率(%)", "短線停利Alarm", "長線停利Alarm"]
+    bull_need = ["星等", "乖離率(%)", "短線停利Alarm", "長線停利Alarm"]
     bear_need = ["星等", "乖離率(%)", "短線回補Alarm", "長線回補Alarm"]
 
     for c in bull_need:
@@ -1731,35 +652,24 @@ def load_snapshot(settle_date):
     path = get_snapshot_path(settle_date)
     if not os.path.exists(path):
         return None
-
-    try:
-        with open(path, "rb") as f:
-            return pickle.load(f)
-    except Exception:
-        try:
-            bad_name = path + ".bad"
-            if os.path.exists(bad_name):
-                os.remove(bad_name)
-            os.rename(path, bad_name)
-        except Exception:
-            try:
-                os.remove(path)
-            except Exception:
-                pass
-        return None
+    with open(path, "rb") as f:
+        return pickle.load(f)
 
 
 def find_latest_compatible_snapshot(days_back=10):
     ensure_output_dir()
     today = get_effective_reference_today()
-
     for i in range(days_back + 1):
         d = today - timedelta(days=i)
-        snap = load_snapshot(str(d))
-        if isinstance(snap, dict) and is_snapshot_compatible(snap):
-            snap["settle_date"] = str(d)
-            return snap
-
+        path = get_snapshot_path(str(d))
+        if os.path.exists(path):
+            try:
+                snap = load_snapshot(str(d))
+                if is_snapshot_compatible(snap):
+                    snap["settle_date"] = str(d)
+                    return snap
+            except Exception:
+                pass
     return None
 
 
@@ -1960,14 +870,14 @@ def get_latest_available_trading_date(max_lookback_days=20):
         has_data = False
 
         try:
-            df1 = fetch_market_daily_all_cached("上市", d)
+            df1 = fetch_twse_daily_all(d)
             if df1 is not None and not df1.empty:
                 has_data = True
         except Exception as e:
             last_exception_msgs.append(f"TWSE {fmt_date_ymd(d)}: {e}")
 
         try:
-            df2 = fetch_market_daily_all_cached("上櫃", d)
+            df2 = fetch_tpex_daily_all(d)
             if df2 is not None and not df2.empty:
                 has_data = True
         except Exception as e:
@@ -2005,9 +915,9 @@ def fetch_market_week_data(market, stock_codes, target_settle_date, logger=None)
     for d in dates:
         try:
             if market == "上市":
-                df = fetch_market_daily_all_cached("上市", d)
+                df = fetch_twse_daily_all(d)
             else:
-                df = fetch_market_daily_all_cached("上櫃", d)
+                df = fetch_tpex_daily_all(d)
 
             if df is not None and not df.empty:
                 df = df[df["股票代號"].isin(stock_codes)].copy()
@@ -2058,81 +968,41 @@ def fetch_market_week_data(market, stock_codes, target_settle_date, logger=None)
 # 歷史日資料 -> 週K
 # =========================
 def fetch_market_daily_history(market, stock_codes, start_date, end_date, logger=None):
-    global LAST_HISTORY_FETCH_WARNINGS
-
-    def _fetch_once(d):
-        if market == "上市":
-            return fetch_market_daily_all_cached("上市", d)
-        return fetch_market_daily_all_cached("上櫃", d)
-
     all_frames = []
     cur = start_date
     total_days = (end_date - start_date).days + 1
     day_count = 0
     hard_failures = []
-    soft_missing = []
-    success_days = 0
 
     while cur <= end_date:
         day_count += 1
-        df = None
-        last_err = None
-
-        for attempt in range(1, HISTORY_FETCH_RETRY_PER_DAY + 1):
-            try:
-                df = _fetch_once(cur)
-                last_err = None
-                if df is not None and not df.empty:
-                    break
-            except Exception as e:
-                last_err = e
-                if logger:
-                    logger(f"[警告] {market} {fmt_date_ymd(cur)} 第 {attempt}/{HISTORY_FETCH_RETRY_PER_DAY} 次抓取失敗：{e}")
-                time.sleep(min(1.2 * attempt, 3.0))
-
-        if last_err is not None:
-            hard_failures.append((fmt_date_ymd(cur), str(last_err)))
-            if logger:
-                logger(f"[警告] {market} {fmt_date_ymd(cur)} 最終抓取失敗，先跳過此日")
-        elif df is not None and not df.empty:
-            df = df[df["股票代號"].isin(stock_codes)].copy()
-            if not df.empty:
-                df["市場別"] = market
-                all_frames.append(df)
-                success_days += 1
-                if logger:
-                    logger(f"[{market}] {fmt_date_ymd(cur)} 抓取成功，筆數={len(df)} ({day_count}/{total_days})")
+        try:
+            if market == "上市":
+                df = fetch_twse_daily_all(cur)
             else:
-                soft_missing.append(fmt_date_ymd(cur))
+                df = fetch_tpex_daily_all(cur)
+
+            if df is not None and not df.empty:
+                df = df[df["股票代號"].isin(stock_codes)].copy()
+                if not df.empty:
+                    df["市場別"] = market
+                    all_frames.append(df)
+                    if logger:
+                        logger(f"[{market}] {fmt_date_ymd(cur)} 抓取成功，筆數={len(df)} ({day_count}/{total_days})")
+            else:
                 if logger:
-                    logger(f"[{market}] {fmt_date_ymd(cur)} 有回傳但目標股票無資料，先略過 ({day_count}/{total_days})")
-        else:
-            soft_missing.append(fmt_date_ymd(cur))
+                    logger(f"[{market}] {fmt_date_ymd(cur)} 無資料 ({day_count}/{total_days})")
+        except Exception as e:
+            hard_failures.append((fmt_date_ymd(cur), str(e)))
             if logger:
-                logger(f"[{market}] {fmt_date_ymd(cur)} 無資料，先略過 ({day_count}/{total_days})")
+                logger(f"[警告] {market} {fmt_date_ymd(cur)} 抓取失敗：{e}")
 
         time.sleep(SLEEP_SEC)
         cur += timedelta(days=1)
 
-    success_ratio = (success_days / total_days) if total_days else 0.0
-
-    warning_parts = []
-    if soft_missing:
-        warning_parts.append(f"無資料 {len(soft_missing)} 天")
     if hard_failures:
-        warning_parts.append(f"抓取失敗 {len(hard_failures)} 天")
-    if warning_parts:
-        warn_msg = f"{market} 歷史資料部分缺失：{'、'.join(warning_parts)}，系統已自動略過缺漏日期並繼續分析。"
-        LAST_HISTORY_FETCH_WARNINGS.append(warn_msg)
-        if logger:
-            logger(f"[提示] {warn_msg}")
-
-    if hard_failures and len(hard_failures) > HISTORY_FETCH_MAX_HARD_FAILURES and success_ratio < HISTORY_FETCH_MIN_SUCCESS_RATIO:
         sample = "；".join([f"{d}" for d, _ in hard_failures[:5]])
-        raise RuntimeError(
-            f"{market} 歷史資料抓取失敗 {len(hard_failures)} 天，成功率僅 {success_ratio:.0%}，"
-            f"已超過容錯上限，本次中止。失敗日期示例：{sample}"
-        )
+        raise RuntimeError(f"{market} 歷史資料抓取失敗 {len(hard_failures)} 天，為避免分析不一致，本次中止。失敗日期示例：{sample}")
 
     if not all_frames:
         return pd.DataFrame(columns=[
@@ -2227,7 +1097,7 @@ def calculate_weekly_indicators(weekly_df):
     return df
 
 
-def get_latest_week_20ma_candidates(weekly_ma_df, master_df, min_weekly_volume=50000):
+def get_latest_week_20ma_candidates(weekly_ma_df, master_df, min_weekly_volume=10000):
     empty_cols = [
         "項次", "股票代號", "股票名稱", "市場別", "產業別", "週結算日期",
         "最新週收盤價", "週20MA", "最新一週成交量(張)", "是否站上週20MA"
@@ -2841,13 +1711,13 @@ def calc_training_score(grp, trend_info):
                 tags.append("中紅K")
 
     if pd.notna(vol):
-        if vol >= 100000:
+        if vol >= 50000:
             score += 8
-            tags.append("週量極大")
-        elif vol >= 80000:
-            score += 5
             tags.append("週量大")
-        elif vol >= 50000:
+        elif vol >= 20000:
+            score += 5
+            tags.append("週量中大")
+        elif vol >= 10000:
             score += 3
             tags.append("週量達標")
 
@@ -2989,13 +1859,13 @@ def calc_bearish_training_score(grp, trend_info):
                 tags.append("中黑K")
 
     if pd.notna(vol):
-        if vol >= 100000:
+        if vol >= 50000:
             score += 8
-            tags.append("週量極大")
-        elif vol >= 80000:
-            score += 5
             tags.append("週量大")
-        elif vol >= 50000:
+        elif vol >= 20000:
+            score += 5
+            tags.append("週量中大")
+        elif vol >= 10000:
             score += 3
             tags.append("週量達標")
 
@@ -3516,7 +2386,7 @@ def build_bearish_training_pool_sheet(weekly_ma_df, master_df):
 def build_client_bullish_view(training_df):
     cols = [
         "股票代號", "股票名稱", "產業別", "週結算日期",
-        "星等", "StrongScore", "乖離率(%)", "短線停利Alarm", "長線停利Alarm"
+        "星等", "乖離率(%)", "短線停利Alarm", "長線停利Alarm"
     ]
     if training_df is None or training_df.empty:
         return pd.DataFrame(columns=["項次"] + cols)
@@ -3587,159 +2457,6 @@ def build_client_bearish_keyk_view(bearish_key_df):
     return out
 
 
-
-def build_ai_holding_opinion(code, result_dict):
-    weekly_raw = result_dict.get("WEEKLY_MA_RAW", pd.DataFrame())
-    if not isinstance(weekly_raw, pd.DataFrame) or weekly_raw.empty:
-        return {
-            "summary": "AI技術觀察：目前沒有足夠週K資料。",
-            "status": "資料不足",
-            "star": "",
-            "bias": "",
-            "short_alarm": "",
-            "long_alarm": "",
-            "detail_lines": ["AI技術觀察：目前沒有足夠週K資料。"],
-        }
-
-    sub = weekly_raw[weekly_raw["股票代號"].astype(str) == str(code)].copy()
-    if sub.empty:
-        return {
-            "summary": "AI技術觀察：查無此檔週K資料。",
-            "status": "查無資料",
-            "star": "",
-            "bias": "",
-            "short_alarm": "",
-            "long_alarm": "",
-            "detail_lines": ["AI技術觀察：查無此檔週K資料。"],
-        }
-
-    sub = sub.sort_values("週結算日期").reset_index(drop=True)
-    row = sub.iloc[-1]
-    prev = sub.iloc[-2] if len(sub) >= 2 else row
-
-    close = parse_number(row.get("週收盤價"))
-    ma3 = parse_number(row.get("週3MA"))
-    ma5 = parse_number(row.get("週5MA"))
-    ma20 = parse_number(row.get("週20MA"))
-    vol = parse_number(row.get("週成交量(張)"))
-    vol20 = parse_number(row.get("量20MA"))
-    high26 = parse_number(row.get("近26週最高"))
-    low26 = parse_number(row.get("近26週最低"))
-    prev_ma3 = parse_number(prev.get("週3MA"))
-    prev_ma5 = parse_number(prev.get("週5MA"))
-
-    bias_pct = None
-    if close not in [None, 0] and ma20 not in [None, 0]:
-        bias_pct = round((close / ma20 - 1.0) * 100.0, 2)
-
-    score = 0
-    tags = []
-
-    if close is not None and ma20 is not None:
-        if close >= ma20:
-            score += 25
-            tags.append("站上週20MA")
-        else:
-            score -= 20
-            tags.append("跌破週20MA")
-
-    if ma3 is not None and ma5 is not None and ma20 is not None:
-        if ma3 >= ma5 >= ma20:
-            score += 25
-            tags.append("均線偏多")
-        elif ma3 <= ma5 <= ma20:
-            score -= 25
-            tags.append("均線偏空")
-        else:
-            tags.append("均線整理")
-
-    if bias_pct is not None:
-        if -3 <= bias_pct <= 8:
-            score += 10
-            tags.append("乖離可控")
-        elif bias_pct > 12:
-            score -= 12
-            tags.append("偏離過大")
-        elif bias_pct < -8:
-            score -= 8
-            tags.append("弱勢乖離")
-
-    if vol is not None and vol20 not in [None, 0]:
-        if vol >= vol20 * 1.2:
-            score += 10
-            tags.append("量能放大")
-        elif vol < vol20 * 0.8:
-            score -= 5
-            tags.append("量能偏弱")
-
-    if close is not None and high26 not in [None, 0]:
-        if close >= high26 * 0.97:
-            score += 10
-            tags.append("接近波段高")
-    if close is not None and low26 not in [None, 0]:
-        if close <= low26 * 1.05:
-            score -= 10
-            tags.append("接近波段低")
-
-    short_alarm = ""
-    long_alarm = ""
-    if prev_ma3 is not None and prev_ma5 is not None and ma3 is not None and ma5 is not None:
-        if prev_ma3 >= prev_ma5 and ma3 < ma5:
-            short_alarm = "是"
-            score -= 10
-            tags.append("短線轉弱")
-    if close is not None and ma20 is not None and close < ma20:
-        long_alarm = "是"
-
-    if score >= 55:
-        status = "偏多觀察"
-        summary = "AI技術觀察：型態偏多，但仍需自行判斷進出。"
-    elif score >= 35:
-        status = "中性偏多"
-        summary = "AI技術觀察：結構尚可，可持續觀察量價與均線。"
-    elif score >= 15:
-        status = "區間整理"
-        summary = "AI技術觀察：目前偏整理，尚未形成明確優勢。"
-    elif score >= -5:
-        status = "中性偏弱"
-        summary = "AI技術觀察：動能不足，宜保守看待。"
-    else:
-        status = "偏弱觀察"
-        summary = "AI技術觀察：結構偏弱，應留意風險控管。"
-
-    star_count = max(1, min(5, int(round((score + 20) / 20))))
-    star = "★" * star_count
-    bias_str = "" if bias_pct is None else bias_pct
-    detail_lines = [
-        f"股票代號：{code}",
-        "",
-        "持股判定：非系統選股池（AI技術觀察）",
-        f"AI綜合判讀：{status}",
-        f"AI觀察摘要：{summary}",
-        f"AI參考星等：{star}",
-        f"StrongScore：{score}",
-        f"乖離率(20MA)：{bias_str}%" if bias_str != "" else "乖離率(20MA)：",
-        f"短線提醒：{short_alarm or '否'}",
-        f"長線提醒：{long_alarm or '否'}",
-        "",
-        "技術重點：",
-        "1. 本區僅提供技術面整理與AI風格觀察，不構成買賣建議。",
-        f"2. 目前訊號：{'、'.join(tags) if tags else '資料有限'}。",
-        "3. 建議仍搭配自己的成本、資金控管與停損紀律。",
-    ]
-
-    return {
-        "summary": summary,
-        "status": status,
-        "star": star,
-        "strong_score": score,
-        "bias": bias_str,
-        "short_alarm": short_alarm,
-        "long_alarm": long_alarm,
-        "detail_lines": detail_lines,
-    }
-
-
 def build_holdings_view(holdings_codes, result_dict):
     master = result_dict.get("MASTER_STOCK_LIST", pd.DataFrame())
     bull = result_dict.get("TRAINING_POOL", pd.DataFrame())
@@ -3771,7 +2488,6 @@ def build_holdings_view(holdings_codes, result_dict):
                 "來源": "系統看多池",
                 "狀態": "系統選出",
                 "星等": r.get("星等", ""),
-                "StrongScore": r.get("StrongScore", ""),
                 "乖離率(%)": r.get("乖離率(%)", ""),
                 "短線提醒": r.get("短線停利Alarm", ""),
                 "長線提醒": r.get("長線停利Alarm", ""),
@@ -3786,32 +2502,29 @@ def build_holdings_view(holdings_codes, result_dict):
                 "來源": "系統看空池",
                 "狀態": "系統選出",
                 "星等": r.get("星等", ""),
-                "StrongScore": r.get("StrongScore", r.get("BearishScore", "")),
                 "乖離率(%)": r.get("乖離率(%)", ""),
                 "短線提醒": r.get("短線回補Alarm", ""),
                 "長線提醒": r.get("長線回補Alarm", ""),
                 "意見": "可提供意見",
             })
         else:
-            ai_info = build_ai_holding_opinion(code, result_dict)
             rows.append({
                 "股票代號": code,
                 "股票名稱": name if name else "",
                 "產業別": industry if industry else "",
                 "來源": "持股池外",
-                "狀態": ai_info.get("status", "客戶自選"),
-                "星等": ai_info.get("star", ""),
-                "StrongScore": ai_info.get("strong_score", ""),
-                "乖離率(%)": ai_info.get("bias", ""),
-                "短線提醒": ai_info.get("short_alarm", "") or "否",
-                "長線提醒": ai_info.get("long_alarm", "") or "否",
-                "意見": ai_info.get("summary", "AI技術觀察"),
+                "狀態": "客戶自選",
+                "星等": "",
+                "乖離率(%)": "",
+                "短線提醒": "",
+                "長線提醒": "",
+                "意見": "無法提供意見",
             })
 
     if not rows:
         return pd.DataFrame(columns=[
             "項次", "股票代號", "股票名稱", "產業別", "來源", "狀態",
-            "星等", "StrongScore", "乖離率(%)", "短線提醒", "長線提醒", "意見"
+            "星等", "乖離率(%)", "短線提醒", "長線提醒", "意見"
         ])
 
     out = pd.DataFrame(rows)
@@ -3860,12 +2573,12 @@ def build_all_excel(logger=None, force_rebuild_snapshot=False):
         log(f"偵測到當日快照，檢查相容性：{snapshot_path}")
         result = load_snapshot(target_settle_date_str)
 
-        if isinstance(result, dict) and is_snapshot_compatible(result):
+        if is_snapshot_compatible(result):
             log("snapshot 相容，直接載入。")
             result["excel_path"] = OUTPUT_XLSX
             return result
         else:
-            log("當日 snapshot 已損壞、缺少舊模組，或與目前版本不相容，將自動重新建構新快照。")
+            log("舊 snapshot 與目前版本不相容，將自動重新建構新快照。")
 
     log("1. 抓取上市/上櫃一般股票清單 + 產業別...")
     master = get_master_stock_list()
@@ -3926,13 +2639,8 @@ def build_all_excel(logger=None, force_rebuild_snapshot=False):
     history_start = history_end - timedelta(days=460)
     log(f"歷史資料區間：{history_start} ~ {history_end}")
 
-    LAST_HISTORY_FETCH_WARNINGS.clear()
     listed_daily = fetch_market_daily_history("上市", listed_codes, history_start, history_end, logger=log)
     otc_daily = fetch_market_daily_history("上櫃", otc_codes, history_start, history_end, logger=log)
-
-    if LAST_HISTORY_FETCH_WARNINGS:
-        for warn in LAST_HISTORY_FETCH_WARNINGS:
-            log(f"[提示] {warn}")
 
     if listed_daily.empty and otc_daily.empty:
         daily_all = pd.DataFrame()
@@ -4074,299 +2782,6 @@ def clear_auth_session():
         pass
 
 
-def load_referral_db():
-    data = load_json_file(REFERRAL_DB_FILE, default={"users": []})
-    if not isinstance(data, dict):
-        data = {"users": []}
-    users = data.get("users")
-    if not isinstance(users, list):
-        data["users"] = []
-    return data
-
-
-def save_referral_db(data):
-    if not isinstance(data, dict):
-        data = {"users": []}
-    users = data.get("users")
-    if not isinstance(users, list):
-        data["users"] = []
-    save_json_file(REFERRAL_DB_FILE, data)
-
-
-def _referral_norm(v):
-    return clean_text(v).strip()
-
-
-def _referral_user_key(account="", email=""):
-    account = _referral_norm(account).lower()
-    email = _referral_norm(email).lower()
-    return email or account
-
-
-def _referral_find_user(db, account="", email="", invite_code=""):
-    account_n = _referral_norm(account).lower()
-    email_n = _referral_norm(email).lower()
-    invite_n = _referral_norm(invite_code).upper()
-    for row in db.get("users", []):
-        row_account = _referral_norm(row.get("account", "")).lower()
-        row_email = _referral_norm(row.get("email", "")).lower()
-        row_code = _referral_norm(row.get("invite_code", "")).upper()
-        if invite_n and row_code == invite_n:
-            return row
-        if account_n and row_account == account_n:
-            return row
-        if email_n and row_email == email_n:
-            return row
-    return None
-
-
-def _referral_make_code(db, account="", email=""):
-    seed = re.sub(r"[^A-Za-z0-9]", "", (_referral_norm(account) or _referral_norm(email) or "USER").upper())
-    seed = (seed[:8] or "USER")
-    prefix = f"ZS{seed}"
-    existing = { _referral_norm(x.get("invite_code", "")).upper() for x in db.get("users", []) if _referral_norm(x.get("invite_code", "")) }
-    if prefix not in existing:
-        return prefix
-    for _ in range(5000):
-        suffix = str(random.randint(1000, 9999))
-        code = f"{prefix}{suffix}"
-        if code not in existing:
-            return code
-    return f"ZS{uuid.uuid4().hex[:12].upper()}"
-
-
-def ensure_referral_user(account="", email=""):
-    db = load_referral_db()
-    row = _referral_find_user(db, account=account, email=email)
-    now = datetime.now().isoformat(timespec="seconds")
-    if row is None:
-        row = {
-            "account": _referral_norm(account),
-            "email": _referral_norm(email).lower(),
-            "invite_code": _referral_make_code(db, account=account, email=email),
-            "parent_invite_code": "",
-            "parent_account": "",
-            "parent_email": "",
-            "created_at": now,
-            "updated_at": now,
-        }
-        db.setdefault("users", []).append(row)
-    else:
-        if _referral_norm(account) and not _referral_norm(row.get("account", "")):
-            row["account"] = _referral_norm(account)
-        if _referral_norm(email) and not _referral_norm(row.get("email", "")):
-            row["email"] = _referral_norm(email).lower()
-        if not _referral_norm(row.get("invite_code", "")):
-            row["invite_code"] = _referral_make_code(db, account=account, email=email)
-        row["updated_at"] = now
-    save_referral_db(db)
-    return row
-
-
-def register_referral_relation(account="", email="", invite_code_input=""):
-    db = load_referral_db()
-    now = datetime.now().isoformat(timespec="seconds")
-    row = _referral_find_user(db, account=account, email=email)
-    if row is None:
-        row = {
-            "account": _referral_norm(account),
-            "email": _referral_norm(email).lower(),
-            "invite_code": _referral_make_code(db, account=account, email=email),
-            "parent_invite_code": "",
-            "parent_account": "",
-            "parent_email": "",
-            "created_at": now,
-            "updated_at": now,
-        }
-        db.setdefault("users", []).append(row)
-    else:
-        if _referral_norm(account):
-            row["account"] = _referral_norm(account)
-        if _referral_norm(email):
-            row["email"] = _referral_norm(email).lower()
-        if not _referral_norm(row.get("invite_code", "")):
-            row["invite_code"] = _referral_make_code(db, account=account, email=email)
-
-    invite_code_input = _referral_norm(invite_code_input).upper()
-    if invite_code_input and invite_code_input != _referral_norm(row.get("invite_code", "")).upper():
-        parent = _referral_find_user(db, invite_code=invite_code_input)
-        if parent is not None:
-            row["parent_invite_code"] = _referral_norm(parent.get("invite_code", "")).upper()
-            row["parent_account"] = _referral_norm(parent.get("account", ""))
-            row["parent_email"] = _referral_norm(parent.get("email", "")).lower()
-    row["updated_at"] = now
-    save_referral_db(db)
-    return row
-
-
-def get_referral_profile(account="", email=""):
-    db = load_referral_db()
-    row = _referral_find_user(db, account=account, email=email)
-    if row is None:
-        row = ensure_referral_user(account=account, email=email)
-        db = load_referral_db()
-    code = _referral_norm(row.get("invite_code", "")).upper()
-    direct = [x for x in db.get("users", []) if _referral_norm(x.get("parent_invite_code", "")).upper() == code]
-    child_map = {}
-    for x in db.get("users", []):
-        p = _referral_norm(x.get("parent_invite_code", "")).upper()
-        if p:
-            child_map.setdefault(p, []).append(x)
-
-    visited = set()
-    def _dfs(parent_code):
-        total = 0
-        for child in child_map.get(parent_code, []):
-            child_code = _referral_norm(child.get("invite_code", "")).upper()
-            if not child_code or child_code in visited:
-                continue
-            visited.add(child_code)
-            total += 1
-            total += _dfs(child_code)
-        return total
-
-    team_total = _dfs(code) if code else 0
-    return {
-        "account": _referral_norm(row.get("account", "")),
-        "email": _referral_norm(row.get("email", "")),
-        "invite_code": code,
-        "parent_invite_code": _referral_norm(row.get("parent_invite_code", "")).upper(),
-        "parent_account": _referral_norm(row.get("parent_account", "")),
-        "parent_email": _referral_norm(row.get("parent_email", "")),
-        "direct_invites": len(direct),
-        "team_total": team_total,
-        "created_at": _referral_norm(row.get("created_at", "")),
-    }
-
-
-def build_referral_export_data(admin_users=None):
-    db = load_referral_db()
-    records = []
-    server_rows = admin_users if isinstance(admin_users, list) else []
-    server_map = {}
-    for row in server_rows:
-        if not isinstance(row, dict):
-            continue
-        server_map[_referral_user_key(row.get("account", ""), row.get("email", ""))] = row
-
-    user_map_by_code = {}
-    child_map = {}
-    for row in db.get("users", []):
-        code = _referral_norm(row.get("invite_code", "")).upper()
-        if code:
-            user_map_by_code[code] = row
-        parent_code = _referral_norm(row.get("parent_invite_code", "")).upper()
-        if parent_code:
-            child_map.setdefault(parent_code, []).append(row)
-
-    memo = {}
-    def _team_total(code, stack=None):
-        code = _referral_norm(code).upper()
-        if not code:
-            return 0
-        if code in memo:
-            return memo[code]
-        if stack is None:
-            stack = set()
-        if code in stack:
-            return 0
-        stack = set(stack)
-        stack.add(code)
-        total = 0
-        for child in child_map.get(code, []):
-            child_code = _referral_norm(child.get("invite_code", "")).upper()
-            if not child_code:
-                continue
-            total += 1
-            total += _team_total(child_code, stack)
-        memo[code] = total
-        return total
-
-    def _build_chain(row):
-        chain = []
-        seen = set()
-        cur = row
-        while isinstance(cur, dict):
-            code = _referral_norm(cur.get("invite_code", "")).upper()
-            if not code or code in seen:
-                break
-            seen.add(code)
-            chain.append(_referral_norm(cur.get("account") or cur.get("email") or code))
-            parent_code = _referral_norm(cur.get("parent_invite_code", "")).upper()
-            if not parent_code:
-                break
-            cur = user_map_by_code.get(parent_code)
-        return list(reversed(chain))
-
-    roots = []
-    for row in db.get("users", []):
-        code = _referral_norm(row.get("invite_code", "")).upper()
-        if not code:
-            continue
-        parent_code = _referral_norm(row.get("parent_invite_code", "")).upper()
-        if not parent_code or parent_code not in user_map_by_code:
-            roots.append(row)
-
-    def _walk(row, level=0, root_label=""):
-        code = _referral_norm(row.get("invite_code", "")).upper()
-        key = _referral_user_key(row.get("account", ""), row.get("email", ""))
-        server_row = server_map.get(key, {})
-        acc = _referral_norm(row.get("account") or server_row.get("account") or "")
-        email = _referral_norm(row.get("email") or server_row.get("email") or "")
-        parent_code = _referral_norm(row.get("parent_invite_code", "")).upper()
-        parent_row = user_map_by_code.get(parent_code, {}) if parent_code else {}
-        direct = len(child_map.get(code, []))
-        team_total = _team_total(code)
-        path = " > ".join(_build_chain(row))
-        records.append({
-            "組織根": root_label or acc or email or code,
-            "層級": level,
-            "帳號": acc,
-            "Email": email,
-            "邀請碼": code,
-            "上層帳號": _referral_norm(parent_row.get("account", "")) or _referral_norm(row.get("parent_account", "")),
-            "上層Email": _referral_norm(parent_row.get("email", "")) or _referral_norm(row.get("parent_email", "")),
-            "上層邀請碼": parent_code,
-            "直推人數": direct,
-            "團隊總人數": team_total,
-            "訂閱狀態": clean_text(server_row.get("subscription_status", "")),
-            "方案": clean_text(server_row.get("plan_type", "")),
-            "建立時間": _referral_norm(row.get("created_at", "")),
-            "更新時間": _referral_norm(row.get("updated_at", "")),
-            "組織路徑": path,
-        })
-        for child in sorted(child_map.get(code, []), key=lambda x: (_referral_norm(x.get("account", "")), _referral_norm(x.get("email", "")))):
-            _walk(child, level + 1, root_label or acc or email or code)
-
-    for root in sorted(roots, key=lambda x: (_referral_norm(x.get("account", "")), _referral_norm(x.get("email", "")))):
-        root_label = _referral_norm(root.get("account") or root.get("email") or root.get("invite_code"))
-        _walk(root, 0, root_label)
-
-    detail_df = pd.DataFrame(records)
-    if detail_df.empty:
-        detail_df = pd.DataFrame(columns=["組織根","層級","帳號","Email","邀請碼","上層帳號","上層Email","上層邀請碼","直推人數","團隊總人數","訂閱狀態","方案","建立時間","更新時間","組織路徑"])
-
-    ranking_df = detail_df[["帳號", "Email", "邀請碼", "直推人數", "團隊總人數", "組織根", "訂閱狀態", "方案"]].copy() if not detail_df.empty else pd.DataFrame(columns=["帳號", "Email", "邀請碼", "直推人數", "團隊總人數", "組織根", "訂閱狀態", "方案"])
-    if not ranking_df.empty:
-        ranking_df = ranking_df.sort_values(["直推人數", "團隊總人數", "帳號", "Email"], ascending=[False, False, True, True]).reset_index(drop=True)
-        ranking_df.insert(0, "名次", range(1, len(ranking_df) + 1))
-
-    root_summary = []
-    if not detail_df.empty:
-        for root_name, grp in detail_df.groupby("組織根"):
-            root_summary.append({
-                "組織根": root_name,
-                "成員數": len(grp),
-                "總直推人數": int(grp["直推人數"].fillna(0).sum()),
-                "最大團隊總人數": int(grp["團隊總人數"].fillna(0).max()) if len(grp) else 0,
-            })
-    root_df = pd.DataFrame(root_summary)
-    if not root_df.empty:
-        root_df = root_df.sort_values(["成員數", "總直推人數", "組織根"], ascending=[False, False, True]).reset_index(drop=True)
-
-    return {"detail": detail_df, "ranking": ranking_df, "roots": root_df}
-
-
 def auth_post(path, payload, timeout=20, headers=None):
     url = f"{AUTH_SERVER_BASE}{path}"
     r = requests.post(url, json=payload, headers=headers or {}, timeout=timeout)
@@ -4415,48 +2830,6 @@ def auth_request(method, path, payload=None, timeout=20, headers=None, params=No
         return {"success": True, "message": r.text.strip()}
 
 
-def parse_datetime_flexible(value):
-    s = clean_text(value)
-    if not s or s.lower() in {'none', 'null', 'nan'}:
-        return None
-    s2 = s.replace('Z', '+00:00')
-    candidates = [s2]
-    if ' ' in s2 and 'T' not in s2:
-        candidates.append(s2.replace(' ', 'T'))
-    for cand in candidates:
-        try:
-            return datetime.fromisoformat(cand)
-        except Exception:
-            pass
-    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y-%m-%d'):
-        try:
-            return datetime.strptime(s, fmt)
-        except Exception:
-            pass
-    return None
-
-
-def format_datetime_for_api(dt_obj):
-    if dt_obj is None:
-        return ''
-    try:
-        return dt_obj.replace(microsecond=0).isoformat(sep=' ')
-    except Exception:
-        return str(dt_obj)
-
-
-def get_plan_duration_days(plan_type):
-    mapping = {
-        'monthly': 30,
-        'quarterly': 90,
-        'halfyear': 180,
-        'yearly': 365,
-        'trial': 7,
-        'free_grant': 30,
-    }
-    return int(mapping.get(clean_text(plan_type).lower(), 30))
-
-
 class AuthDialog(tk.Toplevel):
     def __init__(self, master, device_info):
         super().__init__(master)
@@ -4466,9 +2839,8 @@ class AuthDialog(tk.Toplevel):
         self.pending_register_payload = None
         self.pending_register_email = ""
         self.title("ZHU STOCK 授權登入")
-        self.geometry("760x980")
-        self.minsize(760, 980)
-        self.resizable(True, True)
+        self.geometry("560x700")
+        self.resizable(False, False)
         self.transient(master)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         try:
@@ -4519,7 +2891,6 @@ class AuthDialog(tk.Toplevel):
         self.reg_phone = tk.StringVar()
         self.reg_email = tk.StringVar()
         self.reg_code = tk.StringVar()
-        self.reg_invite_code = tk.StringVar()
 
         reg_fields = [
             ("帳號", self.reg_username, None),
@@ -4540,16 +2911,7 @@ class AuthDialog(tk.Toplevel):
         ttk.Label(reg_tab, text="驗證碼").pack(anchor="w", pady=(5, 0))
         ttk.Entry(reg_tab, textvariable=self.reg_code, width=46).pack(anchor="w", fill="x", pady=(2, 0))
 
-        action_row = ttk.Frame(reg_tab)
-        action_row.pack(anchor="center", fill="x", pady=(10, 8))
-        ttk.Button(action_row, text="完成註冊", command=self.verify_register_code).pack(anchor="center")
-        ttk.Label(reg_tab, text="註冊成功後，系統會自動開通 30 天免費試用。", foreground="#555555", wraplength=620).pack(anchor="w", pady=(0, 8))
-
-        ttk.Label(reg_tab, text="輸入邀請碼（選填）").pack(anchor="w", pady=(5, 0))
-        ttk.Entry(reg_tab, textvariable=self.reg_invite_code, width=46).pack(anchor="w", fill="x", pady=(2, 0))
-        ttk.Label(reg_tab, text="有朋友分享推薦碼時可填入；未填寫則會成為獨立組織。", foreground="#555555", wraplength=620).pack(anchor="w", pady=(2, 0))
-
-        ttk.Label(reg_tab, text="註冊前請完整閱讀免責聲明", foreground="#8B0000", font=("Microsoft JhengHei", 10, "bold")).pack(anchor="w", pady=(6, 4))
+        ttk.Label(reg_tab, text="註冊前請完整閱讀免責聲明", foreground="#8B0000", font=("Microsoft JhengHei", 10, "bold")).pack(anchor="w", pady=(10, 4))
         self.reg_agree_var = tk.BooleanVar(value=False)
         agree_btn_frame = ttk.Frame(reg_tab)
         agree_btn_frame.pack(anchor="w", pady=(0, 6))
@@ -4561,11 +2923,16 @@ class AuthDialog(tk.Toplevel):
         disclaimer_frame.pack(fill="both", expand=False, pady=(0, 6))
         disclaimer_scroll = ttk.Scrollbar(disclaimer_frame, orient="vertical")
         disclaimer_scroll.pack(side="right", fill="y")
-        self.reg_disclaimer_text = tk.Text(disclaimer_frame, height=6, wrap="word", yscrollcommand=disclaimer_scroll.set)
+        self.reg_disclaimer_text = tk.Text(disclaimer_frame, height=10, wrap="word", yscrollcommand=disclaimer_scroll.set)
         self.reg_disclaimer_text.pack(side="left", fill="both", expand=True)
         disclaimer_scroll.config(command=self.reg_disclaimer_text.yview)
         self.reg_disclaimer_text.insert("1.0", DISCLAIMER_TEXT)
         self.reg_disclaimer_text.config(state="disabled")
+
+        btn_frame = ttk.Frame(reg_tab)
+        btn_frame.pack(anchor="center", pady=14)
+        ttk.Button(btn_frame, text="完成註冊", command=self.verify_register_code).pack(side="left", padx=6)
+        ttk.Label(reg_tab, text="註冊成功後，系統會自動開通 30 天免費試用。", foreground="#555555", wraplength=480).pack(anchor="w", pady=(4, 0))
 
         # reset password fields
         self.reset_account = tk.StringVar()
@@ -4597,13 +2964,11 @@ class AuthDialog(tk.Toplevel):
         user = login_data.get("user", {}) or {}
         email = clean_text(user.get("email", ""))
         username = clean_text(user.get("username", ""))
-        ref_user = ensure_referral_user(account=username or account, email=email)
         return {
             "login_account": account,
             "account": username or email or account,
             "email": email,
             "username": username,
-            "invite_code": clean_text(ref_user.get("invite_code", "")).upper(),
             "phone": clean_text(user.get("phone") or user.get("mobile") or ""),
             "token": login_data.get("access_token", login_data.get("token", "")),
             "device_id": self.device_info.get("device_id", ""),
@@ -4648,7 +3013,6 @@ class AuthDialog(tk.Toplevel):
             "confirm_password": self.reg_confirm_password.get(),
             "phone": clean_text(self.reg_phone.get()),
             "email": clean_text(self.reg_email.get()).lower(),
-            "invite_code": clean_text(self.reg_invite_code.get()).upper(),
             "device_id": self.device_info.get("device_id", ""),
             "device_name": self.device_info.get("device_name", ""),
         }
@@ -4685,18 +3049,7 @@ class AuthDialog(tk.Toplevel):
             self.set_message("請先勾選『我已完整閱讀並同意上述免責聲明』後，再完成註冊。")
             return
         try:
-            payload = {
-                "username": clean_text(self.reg_username.get()),
-                "password": self.reg_password.get(),
-                "confirm_password": self.reg_confirm_password.get(),
-                "phone": clean_text(self.reg_phone.get()),
-                "email": email,
-                "code": code,
-                "invite_code": clean_text(self.reg_invite_code.get()).upper(),
-                "device_id": self.device_info.get("device_id", ""),
-                "device_name": self.device_info.get("device_name", ""),
-            }
-            data = auth_post("/auth/verify-register-code", payload)
+            data = auth_post("/auth/verify-register-code", {"email": email, "code": code})
             if not data.get("success"):
                 self.set_message(data.get("message", "驗證失敗"))
                 return
@@ -4708,12 +3061,6 @@ class AuthDialog(tk.Toplevel):
                 self.set_message(f"註冊成功，但自動登入失敗：{login_data.get('message', '')}")
                 return
             session_payload = self._session_from_login(clean_text(self.reg_username.get()), login_data)
-            local_ref = register_referral_relation(
-                account=clean_text(self.reg_username.get()),
-                email=email,
-                invite_code_input=clean_text(self.reg_invite_code.get()).upper(),
-            )
-            session_payload["invite_code"] = clean_text(local_ref.get("invite_code", "")).upper()
             session_payload["remember_me"] = False
             clear_auth_session()
             self.result = session_payload
@@ -4804,7 +3151,7 @@ class StockApp(tk.Tk):
         self.latest_result = {}
         self.latest_excel_path = OUTPUT_XLSX
         self.chart_canvas = None
-        self.user_holdings = []
+        self.user_holdings = load_holdings()
         self.loading_popup = None
         self.loading_img = None
         self.device_info = get_local_device_info()
@@ -4820,9 +3167,6 @@ class StockApp(tk.Tk):
         self.payment_payer_name_var = tk.StringVar()
         self.payment_phone_var = tk.StringVar()
         self.payment_status_var = tk.StringVar(value="請先閱讀付款前聲明。")
-        self.payment_savings_var = tk.StringVar(value=get_plan_savings_text("monthly"))
-        self.feedback_topic_var = tk.StringVar(value="我要回饋")
-        self.feedback_status_var = tk.StringVar(value="若遇到問題、想法或建議，可在下方填寫並送出。")
         self.payment_agree_var = tk.BooleanVar(value=False)
         self.payment_consent_status_var = tk.StringVar(value="目前狀態：尚未同意付款前聲明，匯款帳號尚未顯示。")
         self.admin_payment_status_var = tk.StringVar(value="請按「重新整理」載入付款回報清單。")
@@ -4844,21 +3188,10 @@ class StockApp(tk.Tk):
         self.admin_members_end_var = tk.StringVar()
         self.admin_members_reason_var = tk.StringVar(value="活動贈送")
         self.admin_members_note_var = tk.StringVar()
-        self.admin_warrant_days_var = tk.StringVar(value="30")
-        self.warrant_status_var = tk.StringVar(value="權證專區：尚未驗證")
-        self.warrant_watchlist = load_warrant_watchlist(self.get_current_account_key())
-        self.warrant_selected_code_var = tk.StringVar(value="觀察標的：尚未選擇")
-        self.referral_invite_code_var = tk.StringVar(value="我的邀請碼：尚未登入")
-        self.referral_summary_var = tk.StringVar(value="推薦資訊：尚未登入")
         self.auth_profile = {}
-        self.fundamental_cache = {}
         self.is_creator = False
-        self.app_settings = load_app_settings()
-        self.daily_auto_update_job = None
-        self.update_check_job = None
-        self.daily_auto_update_enabled = bool(self.app_settings.get("daily_auto_update", True))
 
-        self.sheet_order = ["CLIENT_BULLISH", "CLIENT_BULLISH_KEYK", "CLIENT_BEARISH", "CLIENT_BEARISH_KEYK", "MY_HOLDINGS", "WARRANT_FASTSCAN", "PAYMENT", "FEEDBACK", "ADMIN_USERS", "ADMIN_PAYMENT_REVIEW"]
+        self.sheet_order = ["CLIENT_BULLISH", "CLIENT_BULLISH_KEYK", "CLIENT_BEARISH", "CLIENT_BEARISH_KEYK", "MY_HOLDINGS", "PAYMENT", "ADMIN_USERS", "ADMIN_PAYMENT_REVIEW"]
 
         self.tree_sort_state = {
             "CLIENT_BULLISH": {"column": None, "ascending": True},
@@ -4866,8 +3199,6 @@ class StockApp(tk.Tk):
             "CLIENT_BEARISH": {"column": None, "ascending": True},
             "CLIENT_BEARISH_KEYK": {"column": None, "ascending": True},
             "MY_HOLDINGS": {"column": None, "ascending": True},
-            "WARRANT_FASTSCAN_BULLISH": {"column": None, "ascending": True},
-            "WARRANT_WATCHLIST": {"column": None, "ascending": True},
         }
         self.current_view_data = {
             "CLIENT_BULLISH": pd.DataFrame(),
@@ -4875,15 +3206,10 @@ class StockApp(tk.Tk):
             "CLIENT_BEARISH": pd.DataFrame(),
             "CLIENT_BEARISH_KEYK": pd.DataFrame(),
             "MY_HOLDINGS": pd.DataFrame(),
-            "WARRANT_FASTSCAN_BULLISH": pd.DataFrame(),
-            "WARRANT_FASTSCAN_BEARISH": pd.DataFrame(),
-            "WARRANT_WATCHLIST": pd.DataFrame(),
         }
 
         self.create_widgets()
-        self.refresh_referral_widgets()
         self.after(200, self.initialize_auth_flow)
-        self.after(1200, self.setup_background_tasks)
 
     def create_widgets(self):
         top = ttk.Frame(self)
@@ -4892,14 +3218,12 @@ class StockApp(tk.Tk):
         self.run_btn = ttk.Button(top, text="立即執行分析", command=self.run_analysis_thread)
         self.run_btn.pack(side="left", padx=4)
 
-        self.rebuild_btn = ttk.Button(top, text="強制重新分析", command=self.run_force_rebuild_thread)
+        self.rebuild_btn = ttk.Button(top, text="強制重建快照", command=self.run_force_rebuild_thread)
         self.rebuild_btn.pack(side="left", padx=4)
         self.logout_btn = ttk.Button(top, text="登出 / 切換帳號", command=self.logout)
         self.logout_btn.pack(side="left", padx=4)
         self.payment_btn = ttk.Button(top, text="訂閱 / 付款", command=self.open_payment_tab)
         self.payment_btn.pack(side="left", padx=4)
-        self.check_update_btn = ttk.Button(top, text="檢查更新", command=lambda: self.check_for_app_update(show_no_update=True, manual=True))
-        self.check_update_btn.pack(side="left", padx=4)
 
         ttk.Label(top, text="自動刷新(分鐘)：").pack(side="left", padx=(20, 4))
         self.auto_var = tk.StringVar(value="30")
@@ -4925,7 +3249,6 @@ class StockApp(tk.Tk):
 
         self.summary_var = tk.StringVar(value="看多：0 檔｜多方關鍵K：0 檔｜看空：0 檔｜空方關鍵K：0 檔｜持股：0 檔")
         ttk.Label(info, textvariable=self.summary_var, font=("Microsoft JhengHei", 10, "bold")).pack(side="right", padx=4)
-        ttk.Label(info, textvariable=self.warrant_status_var, font=("Microsoft JhengHei", 10, "bold")).pack(side="right", padx=12)
 
         self.main_pane = ttk.Panedwindow(self, orient="vertical")
         self.main_pane.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -4947,9 +3270,7 @@ class StockApp(tk.Tk):
             "CLIENT_BEARISH": "看空",
             "CLIENT_BEARISH_KEYK": "空方關鍵K",
             "MY_HOLDINGS": "我的持股",
-            "WARRANT_FASTSCAN": "權證快篩",
             "PAYMENT": "訂閱 / 付款",
-            "FEEDBACK": "我要回饋",
             "ADMIN_USERS": "會員管理",
             "ADMIN_PAYMENT_REVIEW": "付款審核",
         }
@@ -4960,9 +3281,7 @@ class StockApp(tk.Tk):
             ("CLIENT_BEARISH", "看空"),
             ("CLIENT_BEARISH_KEYK", "空方關鍵K"),
             ("MY_HOLDINGS", "我的持股"),
-            ("WARRANT_FASTSCAN", "權證快篩"),
             ("PAYMENT", "訂閱 / 付款"),
-            ("FEEDBACK", "我要回饋"),
             ("ADMIN_USERS", "會員管理"),
             ("ADMIN_PAYMENT_REVIEW", "付款審核"),
         ]:
@@ -4970,16 +3289,8 @@ class StockApp(tk.Tk):
             self.notebook.add(frame, text=title)
             self.sheet_frames[sheet] = frame
 
-            if sheet == "WARRANT_FASTSCAN":
-                self.build_warrant_fastscan_tab(frame)
-                continue
-
             if sheet == "PAYMENT":
                 self.build_payment_tab(frame)
-                continue
-
-            if sheet == "FEEDBACK":
-                self.build_feedback_tab(frame)
                 continue
 
             if sheet == "ADMIN_USERS":
@@ -5019,13 +3330,8 @@ class StockApp(tk.Tk):
             tree_frame.columnconfigure(0, weight=1)
 
             tree.bind("<<TreeviewSelect>>", self.on_tree_select)
-            tree.bind("<Button-3>", self.on_tree_right_click)
 
             self.sheet_trees[sheet] = tree
-
-        self.stock_context_menu = tk.Menu(self, tearoff=0)
-        self.stock_context_menu.add_command(label="加入持股", command=self.add_selected_code_to_holdings)
-        self.stock_context_menu.add_command(label="觀察權證", command=self.add_selected_code_to_warrant_watchlist)
 
         chart_frame = ttk.LabelFrame(self.lower_pane, text="週K線圖")
         self.lower_pane.add(chart_frame, weight=3)
@@ -5106,58 +3412,11 @@ class StockApp(tk.Tk):
 
     def update_context_panels_by_tab(self, event=None):
         current_sheet = self._get_current_sheet_key()
-        hide_for = {"PAYMENT", "WARRANT_FASTSCAN", "ADMIN_USERS", "ADMIN_PAYMENT_REVIEW"}
+        hide_for = {"PAYMENT", "ADMIN_USERS", "ADMIN_PAYMENT_REVIEW"}
         self._set_context_panels_visible(current_sheet not in hide_for)
 
     def on_notebook_tab_changed(self, event=None):
         self.update_context_panels_by_tab()
-
-    def build_warrant_fastscan_tab(self, frame):
-        outer = ttk.Frame(frame, padding=12)
-        outer.pack(fill="both", expand=True)
-
-        ttk.Label(outer, text="權證專區", font=("Microsoft JhengHei", 16, "bold")).pack(anchor="w", pady=(0, 8))
-        ttk.Label(
-            outer,
-            text="有效訂閱會員可使用權證專區。可在選股池標的按右鍵加入觀察清單。",
-            foreground="#555555",
-            wraplength=1100,
-        ).pack(anchor="w", pady=(0, 8))
-
-        self.warrant_fastscan_access_label = tk.StringVar(value="權證專區權限：尚未驗證")
-        ttk.Label(outer, textvariable=self.warrant_fastscan_access_label, font=("Microsoft JhengHei", 11, "bold")).pack(anchor="w", pady=(0, 8))
-
-        bar = ttk.Frame(outer)
-        bar.pack(fill="x", pady=(0, 8))
-        ttk.Button(bar, text="重新整理觀察清單", command=self.refresh_warrant_fastscan_ui).pack(side="left", padx=(0, 6))
-        ttk.Button(bar, text="抓取 / 更新權證資料", command=self.refresh_warrant_data_for_watchlist).pack(side="left", padx=6)
-        ttk.Button(bar, text="刪除選取觀察標的", command=self.remove_selected_warrant_watch_code).pack(side="left", padx=6)
-        ttk.Label(bar, textvariable=self.warrant_selected_code_var, foreground="#1F5E2E").pack(side="left", padx=12)
-
-        # 篩選條件不顯示在用戶端；後端仍照條件篩選。
-
-        paned = ttk.Panedwindow(outer, orient="vertical")
-        paned.pack(fill="both", expand=True)
-
-        watch_frame = ttk.LabelFrame(paned, text="觀察標的清單")
-        paned.add(watch_frame, weight=1)
-        self.warrant_watch_tree = ttk.Treeview(watch_frame, show="headings", selectmode="browse")
-        self.warrant_watch_tree.pack(fill="both", expand=True, padx=8, pady=8)
-        self.warrant_watch_tree.bind("<<TreeviewSelect>>", self.on_warrant_watch_select)
-
-        result_frame = ttk.LabelFrame(paned, text="權證結果")
-        paned.add(result_frame, weight=3)
-        self.warrant_result_tree = ttk.Treeview(result_frame, show="headings")
-        vsb = ttk.Scrollbar(result_frame, orient="vertical", command=self.warrant_result_tree.yview)
-        hsb = ttk.Scrollbar(result_frame, orient="horizontal", command=self.warrant_result_tree.xview)
-        self.warrant_result_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        self.warrant_result_tree.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
-        result_frame.rowconfigure(0, weight=1)
-        result_frame.columnconfigure(0, weight=1)
-
-        self.refresh_warrant_fastscan_ui()
 
     def build_payment_tab(self, frame):
         container = ttk.Frame(frame)
@@ -5211,23 +3470,6 @@ class StockApp(tk.Tk):
             foreground="#555555",
         ).pack(anchor="w", pady=(0, 10))
 
-        auto_box = ttk.LabelFrame(outer, text="自動更新設定")
-        auto_box.pack(fill="x", expand=False, pady=(0, 12))
-        ttk.Label(auto_box, text="1. 每次開啟 APP 後，系統可在每日收盤資料穩定後自動執行一次分析。\n2. 用戶端版本更新支援『檢查更新』與啟動時自動檢查，但需伺服器提供最新版 manifest 與下載連結。", wraplength=1100, justify="left").pack(anchor="w", padx=12, pady=(10, 6))
-        auto_btns = ttk.Frame(auto_box)
-        auto_btns.pack(anchor="w", padx=12, pady=(0, 10))
-        ttk.Button(auto_btns, text="立即檢查新版", command=lambda: self.check_for_app_update(show_no_update=True, manual=True)).pack(side="left")
-        ttk.Button(auto_btns, text="立即執行一次分析", command=self.run_analysis_thread).pack(side="left", padx=(8, 0))
-
-        referral_box = ttk.LabelFrame(outer, text="我的推薦 / 邀請資訊")
-        referral_box.pack(fill="x", expand=False, pady=(0, 12))
-        ttk.Label(referral_box, textvariable=self.referral_invite_code_var, font=("Microsoft JhengHei", 11, "bold")).pack(anchor="w", padx=12, pady=(10, 4))
-        ttk.Label(referral_box, textvariable=self.referral_summary_var, foreground="#1F5E2E", wraplength=1100).pack(anchor="w", padx=12, pady=(0, 8))
-        referral_btn_row = ttk.Frame(referral_box)
-        referral_btn_row.pack(anchor="w", padx=12, pady=(0, 10))
-        ttk.Button(referral_btn_row, text="複製我的邀請碼", command=self.copy_my_invite_code).pack(side="left")
-        ttk.Button(referral_btn_row, text="重新整理推薦資訊", command=self.refresh_referral_widgets).pack(side="left", padx=(8, 0))
-
         notice_box = ttk.LabelFrame(outer, text="付款前聲明")
         notice_box.pack(fill="x", expand=False, pady=(0, 12))
 
@@ -5266,7 +3508,6 @@ class StockApp(tk.Tk):
         )
         self.payment_plan_combo.grid(row=0, column=1, sticky="w", pady=6)
         self.payment_plan_combo.bind("<<ComboboxSelected>>", self._on_payment_plan_combo_change)
-        ttk.Label(form, textvariable=self.payment_savings_var, foreground="#1F5E2E", wraplength=720).grid(row=0, column=2, sticky="w", padx=(12, 0), pady=6)
 
         ttk.Label(form, text="匯款銀行", font=("Microsoft JhengHei", 10, "bold")).grid(row=1, column=0, sticky="w", padx=(0, 10), pady=6)
         self.payment_bank_combo = ttk.Combobox(
@@ -5279,21 +3520,18 @@ class StockApp(tk.Tk):
         self.payment_bank_combo.grid(row=1, column=1, sticky="w", pady=6)
 
         ttk.Label(form, text="匯款人姓名 / 暱稱", font=("Microsoft JhengHei", 10, "bold")).grid(row=2, column=0, sticky="w", padx=(0, 10), pady=6)
-        self.payment_payer_name_entry = ttk.Entry(form, textvariable=self.payment_payer_name_var, width=entry_width)
-        self.payment_payer_name_entry.grid(row=2, column=1, sticky="w", pady=6)
+        ttk.Entry(form, textvariable=self.payment_payer_name_var, width=entry_width).grid(row=2, column=1, sticky="w", pady=6)
 
         ttk.Label(form, text="匯款金額", font=("Microsoft JhengHei", 10, "bold")).grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
         self.payment_amount_entry = ttk.Entry(form, textvariable=self.payment_amount_var, width=entry_width, state="readonly")
         self.payment_amount_entry.grid(row=3, column=1, sticky="w", pady=6)
 
         ttk.Label(form, text="匯款後末五碼", font=("Microsoft JhengHei", 10, "bold")).grid(row=4, column=0, sticky="w", padx=(0, 10), pady=6)
-        self.payment_last5_entry = ttk.Entry(form, textvariable=self.payment_last5_var, width=entry_width)
-        self.payment_last5_entry.grid(row=4, column=1, sticky="w", pady=6)
+        ttk.Entry(form, textvariable=self.payment_last5_var, width=entry_width).grid(row=4, column=1, sticky="w", pady=6)
 
         action_row = ttk.Frame(self.payment_submit_box)
         action_row.pack(anchor="w", padx=18, pady=(0, 8))
-        self.payment_submit_btn = ttk.Button(action_row, text="確認送出", command=self.submit_payment_report, width=12)
-        self.payment_submit_btn.pack(side="left")
+        ttk.Button(action_row, text="確認送出", command=self.submit_payment_report, width=12).pack(side="left")
         ttk.Button(action_row, text="清除重填", command=self.reset_payment_form, width=12).pack(side="left", padx=(8, 0))
 
         ttk.Label(
@@ -5303,23 +3541,9 @@ class StockApp(tk.Tk):
             wraplength=1100,
         ).pack(anchor="w", padx=18, pady=(0, 8))
 
-        ttk.Label(outer, textvariable=self.payment_status_var, foreground="#1F5E2E", wraplength=1100).pack(anchor="w", pady=(6, 8))
-
+        ttk.Label(outer, textvariable=self.payment_status_var, foreground="#1F5E2E", wraplength=1100).pack(anchor="w", pady=(6, 0))
         self.update_payment_notice_visibility()
         _sync_scrollregion()
-
-
-    def build_feedback_tab(self, frame):
-        outer = ttk.Frame(frame, padding=18)
-        outer.pack(fill="both", expand=True)
-
-        self.feedback_text = tk.Text(outer, height=20, wrap="word")
-        self.feedback_text.pack(fill="both", expand=True, pady=(0, 10))
-
-        action_row = ttk.Frame(outer)
-        action_row.pack(anchor="w")
-        ttk.Button(action_row, text="送出回饋", command=self.submit_feedback, width=12).pack(side="left")
-        ttk.Label(action_row, textvariable=self.feedback_status_var, foreground="#1F5E2E").pack(side="left", padx=(12, 0))
 
     def update_payment_notice_visibility(self):
         show_accounts = bool(getattr(self, "payment_agree_var", tk.BooleanVar(value=False)).get())
@@ -5382,38 +3606,25 @@ class StockApp(tk.Tk):
         self.payment_payer_name_var.set("")
         self.payment_phone_var.set(clean_text((self.auth_session or {}).get("phone") or ""))
         self.payment_status_var.set("匯款回報欄位已清空。")
-        self.payment_savings_var.set(get_plan_savings_text("monthly"))
         self._on_payment_plan_combo_change()
 
     def show_payment_info_popup(self):
         try:
             win = tk.Toplevel(self)
             win.title("付款資訊提醒")
-            win.geometry("860x620")
+            win.geometry("760x520")
             win.transient(self)
             win.grab_set()
             wrap = ttk.Frame(win, padding=14)
             wrap.pack(fill="both", expand=True)
             ttk.Label(wrap, text="您已同意付款前聲明", font=("Microsoft JhengHei", 13, "bold")).pack(anchor="w", pady=(0, 8))
             ttk.Label(wrap, text="請依序完成：選方案 → 匯款 → 填寫末五碼 → 驗證手機 → 送出資料", foreground="#1F5E2E").pack(anchor="w", pady=(0, 8))
-            box = tk.Text(wrap, wrap="word", height=24)
+            box = tk.Text(wrap, wrap="word", height=20)
             box.pack(fill="both", expand=True)
-            referral_summary = [
-                "【推薦制度說明】",
-                "- 本 APP 提供推薦制度。若有朋友使用您的推薦碼完成註冊，並於體驗後決定成為付費會員，系統可依其實際訂閱方案提供推薦獎勵：",
-                "1. 被推薦者訂閱半年方案者，額外贈送推薦者 1 個月使用權。",
-                "2. 被推薦者訂閱年方案者，額外贈送推薦者 2 個月使用權。",
-                "3. 推薦獎勵之發放時間、認定標準、是否生效、是否可併用活動，仍以管理端實際核對與設定結果為準。",
-                "4. 若推薦資料不完整、推薦碼填寫錯誤、付款資料無法辨識、或有異常情況，管理端得保留調整、延後或不發放之權利。",
-                "",
-            ]
             summary = [
                 "【訂閱方案】",
-                f"- {PAYMENT_PLAN_LABELS.get('monthly', '月訂閱')}｜{get_plan_savings_text('monthly')}",
-                f"- {PAYMENT_PLAN_LABELS.get('halfyear', '半年訂閱')}｜{get_plan_savings_text('halfyear')}",
-                f"- {PAYMENT_PLAN_LABELS.get('yearly', '年訂閱')}｜{get_plan_savings_text('yearly')}",
+                *[f"- {label}" for label in PAYMENT_PLAN_LABELS.values()],
                 "",
-                *referral_summary,
                 "【匯款帳號】",
                 *[f"- {bank}" for bank in PAYMENT_BANKS],
                 "",
@@ -5432,108 +3643,6 @@ class StockApp(tk.Tk):
             ttk.Button(wrap, text="我知道了", command=win.destroy).pack(anchor="e", pady=(10, 0))
         except Exception:
             pass
-
-    def _build_feedback_payload(self):
-        account = clean_text((self.auth_session or {}).get("account") or (self.auth_session or {}).get("username") or "")
-        email = clean_text((self.auth_session or {}).get("email") or "")
-        topic = clean_text(self.feedback_topic_var.get() or "我要回饋")
-        content = clean_text(self.feedback_text.get("1.0", "end").strip()) if getattr(self, "feedback_text", None) is not None else ""
-        user_plan = clean_text((self.license_info or {}).get("plan_type") or (self.auth_profile or {}).get("plan_type") or "")
-        payload = {
-            "feedback_id": str(uuid.uuid4()),
-            "account": account,
-            "email": email,
-            "topic": topic,
-            "content": content,
-            "plan_type": user_plan,
-            "app_version": APP_VERSION,
-            "device": get_local_device_info(),
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        return payload
-
-    def clear_feedback_form(self):
-        self.feedback_topic_var.set("我要回饋")
-        try:
-            self.feedback_topic_combo.current(0)
-        except Exception:
-            pass
-        if getattr(self, "feedback_text", None) is not None:
-            self.feedback_text.delete("1.0", "end")
-        self.feedback_status_var.set("回饋內容已清空。")
-
-    def _save_feedback_local(self, payload):
-        try:
-            data = load_json_file(FEEDBACK_LOCAL_FILE, [])
-            if not isinstance(data, list):
-                data = []
-            data.append(payload)
-            save_json_file(FEEDBACK_LOCAL_FILE, data)
-        except Exception:
-            pass
-
-    def _open_feedback_compose(self, payload):
-        subject = f"[ZHU STOCK APP 回饋] {payload.get('topic', '我要回饋')}"
-        body_lines = [
-            f"帳號：{payload.get('account', '')}",
-            f"Email：{payload.get('email', '')}",
-            f"方案：{payload.get('plan_type', '')}",
-            f"版本：{payload.get('app_version', '')}",
-            f"時間：{payload.get('created_at', '')}",
-            "",
-            "回饋內容：",
-            payload.get('content', ''),
-        ]
-        body = "\n".join(body_lines)
-        gmail_url = (
-            "https://mail.google.com/mail/?view=cm&fs=1"
-            f"&to={quote_plus(FEEDBACK_EMAIL)}"
-            f"&su={quote_plus(subject)}"
-            f"&body={quote_plus(body)}"
-        )
-        try:
-            webbrowser.open(gmail_url)
-            return True
-        except Exception:
-            pass
-        try:
-            mailto_url = f"mailto:{FEEDBACK_EMAIL}?subject={quote_plus(subject)}&body={quote_plus(body)}"
-            webbrowser.open(mailto_url)
-            return True
-        except Exception:
-            return False
-
-    def submit_feedback(self):
-        payload = self._build_feedback_payload()
-        if not payload.get("content"):
-            messagebox.showwarning("提醒", "請先填寫回饋內容。")
-            return
-        self._save_feedback_local(payload)
-
-        direct_sent = False
-        fallback_opened = False
-        error_text = ""
-        try:
-            data = auth_post("/feedback/submit", payload, timeout=20, headers=self._auth_headers())
-            msg = data.get("message") or "回饋已成功送出到信箱。"
-            self.feedback_status_var.set(msg)
-            self.log(f"回饋已送出：{payload.get('topic','')} / {payload.get('account','') or payload.get('email','匿名')}")
-            messagebox.showinfo("完成", msg)
-            direct_sent = True
-        except Exception as e:
-            error_text = str(e)
-            fallback_opened = self._open_feedback_compose(payload)
-            if fallback_opened:
-                msg = "系統已先保存回饋內容，並已開啟預設郵件 / Gmail 撰寫頁，收件人為 xck8284@gmail.com。請直接按送出即可。"
-                self.feedback_status_var.set(msg)
-                self.log(f"回饋改採郵件撰寫頁：{payload.get('topic','')} / {payload.get('account','') or payload.get('email','匿名')}")
-                messagebox.showinfo("已開啟郵件頁面", msg)
-            else:
-                msg = f"已先保存回饋內容，但目前無法自動開啟郵件頁面。可稍後再試。原因：{error_text}"
-                self.feedback_status_var.set(msg)
-                messagebox.showwarning("送出失敗", msg)
-        if direct_sent or fallback_opened:
-            self.clear_feedback_form()
 
     def submit_payment_report(self):
         plan = clean_text(self.payment_plan_var.get())
@@ -5605,7 +3714,6 @@ class StockApp(tk.Tk):
         ttk.Button(row1, text="重新整理付款待審核", command=self.load_admin_overview).pack(side="left", padx=6)
         ttk.Button(row1, text="開啟付款審核頁", command=lambda: self.notebook.select(self.sheet_frames.get("ADMIN_PAYMENT_REVIEW"))).pack(side="left", padx=6)
         ttk.Button(row1, text="匯出Excel", command=self.export_admin_overview_excel).pack(side="left", padx=6)
-        ttk.Button(row1, text="匯出推薦組織圖Excel", command=self.export_referral_org_excel).pack(side="left", padx=6)
         ttk.Button(row1, text="刪除選取會員", command=self.delete_selected_user).pack(side="left", padx=6)
 
         row2 = ttk.Frame(ctrl)
@@ -5639,17 +3747,6 @@ class StockApp(tk.Tk):
         self.admin_members_reason_combo.pack(side="left", padx=(0, 10))
         ttk.Label(row3, text="備註：").pack(side="left")
         ttk.Entry(row3, textvariable=self.admin_members_note_var, width=56).pack(side="left", padx=(0, 10), fill="x", expand=True)
-
-        warrant_box = ttk.LabelFrame(outer, text="權證快篩手動解鎖")
-        warrant_box.pack(fill="x", pady=(0, 8))
-        warrant_row = ttk.Frame(warrant_box)
-        warrant_row.pack(fill="x", padx=8, pady=8)
-        ttk.Label(warrant_row, text="手動天數：").pack(side="left")
-        ttk.Entry(warrant_row, textvariable=self.admin_warrant_days_var, width=8).pack(side="left", padx=(0, 10))
-        ttk.Button(warrant_row, text="半年方案解鎖 30 天", command=self.unlock_warrant_fastscan_halfyear).pack(side="left", padx=4)
-        ttk.Button(warrant_row, text="年方案解鎖 60 天", command=self.unlock_warrant_fastscan_yearly).pack(side="left", padx=4)
-        ttk.Button(warrant_row, text="依輸入天數解鎖", command=self.unlock_warrant_fastscan_custom).pack(side="left", padx=4)
-        ttk.Button(warrant_row, text="取消權證快篩權限", command=self.disable_warrant_fastscan_selected_user).pack(side="left", padx=4)
 
         columns = ("account", "email", "role", "subscription_status", "plan_type", "subscription_end_at", "trial_end_at", "pending_review", "phone")
         tree_frame = ttk.Frame(outer)
@@ -5809,12 +3906,6 @@ class StockApp(tk.Tk):
             "is_admin": self._coerce_bool(item.get("is_admin")),
             "raw": item,
             "pending_review": 0,
-            "invite_code": "",
-            "parent_account": "",
-            "parent_email": "",
-            "parent_invite_code": "",
-            "direct_invites": 0,
-            "team_total": 0,
         }
 
     def _extract_admin_users(self, data):
@@ -5844,61 +3935,6 @@ class StockApp(tk.Tk):
             acc = clean_text(row.get("account", ""))
             email = clean_text(row.get("email", ""))
             row["pending_review"] = pending_map.get(acc, pending_map.get(email, 0))
-        return rows
-
-    def _merge_referral_meta_into_users(self, rows):
-        db = load_referral_db()
-        code_map = {}
-        key_map = {}
-        for item in db.get("users", []):
-            code = clean_text(item.get("invite_code", "")).upper()
-            if code:
-                code_map[code] = item
-            key_map[_referral_user_key(item.get("account", ""), item.get("email", ""))] = item
-
-        child_count = {}
-        for item in db.get("users", []):
-            parent_code = clean_text(item.get("parent_invite_code", "")).upper()
-            if parent_code:
-                child_count[parent_code] = child_count.get(parent_code, 0) + 1
-
-        memo = {}
-        def _team_total(code, stack=None):
-            code = clean_text(code).upper()
-            if not code:
-                return 0
-            if code in memo:
-                return memo[code]
-            if stack is None:
-                stack = set()
-            if code in stack:
-                return 0
-            stack = set(stack)
-            stack.add(code)
-            total = 0
-            for item in db.get("users", []):
-                if clean_text(item.get("parent_invite_code", "")).upper() == code:
-                    child_code = clean_text(item.get("invite_code", "")).upper()
-                    if not child_code:
-                        continue
-                    total += 1
-                    total += _team_total(child_code, stack)
-            memo[code] = total
-            return total
-
-        for row in rows:
-            item = key_map.get(_referral_user_key(row.get("account", ""), row.get("email", "")))
-            if item is None:
-                item = ensure_referral_user(account=row.get("account", ""), email=row.get("email", ""))
-            invite_code = clean_text(item.get("invite_code", "")).upper()
-            parent_code = clean_text(item.get("parent_invite_code", "")).upper()
-            parent_row = code_map.get(parent_code, {}) if parent_code else {}
-            row["invite_code"] = invite_code
-            row["parent_account"] = clean_text(parent_row.get("account", "")) or clean_text(item.get("parent_account", ""))
-            row["parent_email"] = clean_text(parent_row.get("email", "")) or clean_text(item.get("parent_email", ""))
-            row["parent_invite_code"] = parent_code
-            row["direct_invites"] = child_count.get(invite_code, 0)
-            row["team_total"] = _team_total(invite_code)
         return rows
 
     def load_admin_overview(self):
@@ -5982,17 +4018,11 @@ class StockApp(tk.Tk):
                 pd.DataFrame(summary_rows).to_excel(writer, sheet_name="匯出摘要", index=False)
                 pd.DataFrame(member_records).to_excel(writer, sheet_name="會員總覽", index=False)
                 pd.DataFrame(payment_records).to_excel(writer, sheet_name="付款回報", index=False)
-                referral_export["detail"].to_excel(writer, sheet_name="推薦組織圖", index=False)
-                referral_export["ranking"].to_excel(writer, sheet_name="推薦排行榜", index=False)
-                referral_export["roots"].to_excel(writer, sheet_name="組織根摘要", index=False)
 
                 for sheet_name, df in {
                     "匯出摘要": pd.DataFrame(summary_rows),
                     "會員總覽": pd.DataFrame(member_records),
                     "付款回報": pd.DataFrame(payment_records),
-                    "推薦組織圖": referral_export["detail"],
-                    "推薦排行榜": referral_export["ranking"],
-                    "組織根摘要": referral_export["roots"],
                 }.items():
                     ws = writer.book[sheet_name]
                     ws.freeze_panes = "A2"
@@ -6011,76 +4041,6 @@ class StockApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("匯出Excel失敗", str(e))
 
-    def export_referral_org_excel(self):
-        if not self.is_creator:
-            messagebox.showwarning("提醒", "只有創作者帳號可以匯出推薦組織圖。")
-            return
-        try:
-            if not self.admin_users:
-                self.load_admin_users()
-            export_path = get_writable_output_path(REFERRAL_EXPORT_XLSX)
-            referral_export = build_referral_export_data(self.admin_users)
-            with pd.ExcelWriter(export_path, engine="openpyxl") as writer:
-                referral_export["detail"].to_excel(writer, sheet_name="推薦組織圖", index=False)
-                referral_export["ranking"].to_excel(writer, sheet_name="推薦排行榜", index=False)
-                referral_export["roots"].to_excel(writer, sheet_name="組織根摘要", index=False)
-                for sheet_name, df in referral_export.items():
-                    ws_name = {"detail":"推薦組織圖","ranking":"推薦排行榜","roots":"組織根摘要"}[sheet_name]
-                    ws = writer.book[ws_name]
-                    ws.freeze_panes = "A2"
-                    for cell in ws[1]:
-                        cell.font = Font(bold=True)
-                        cell.alignment = Alignment(horizontal="center", vertical="center")
-                    for idx, col_name in enumerate(df.columns, start=1):
-                        max_len = max([len(str(col_name))] + [len(str(v)) for v in df[col_name].fillna("").tolist()]) if not df.empty else len(str(col_name))
-                        ws.column_dimensions[get_column_letter(idx)].width = min(max(max_len + 2, 12), 42)
-            self.log(f"管理員匯出推薦組織圖 Excel：{export_path}")
-            messagebox.showinfo("成功", "推薦組織圖已匯出：\n" + str(export_path))
-        except Exception as e:
-            messagebox.showerror("匯出推薦組織圖失敗", str(e))
-
-    def refresh_referral_widgets(self):
-        sess = self.auth_session or {}
-        account = clean_text(sess.get("account") or sess.get("username") or "")
-        email = clean_text(sess.get("email") or "")
-        if not account and not email:
-            self.referral_invite_code_var.set("我的邀請碼：尚未登入")
-            self.referral_summary_var.set("推薦資訊：請先登入後查看與複製邀請碼。")
-            return
-        profile = get_referral_profile(account=account, email=email)
-        invite_code = clean_text(profile.get("invite_code", "")).upper() or "尚未建立"
-        self.referral_invite_code_var.set(f"我的邀請碼：{invite_code}")
-        parent_label = clean_text(profile.get("parent_account") or profile.get("parent_email") or profile.get("parent_invite_code") or "獨立組織")
-        self.referral_summary_var.set(
-            f"上層：{parent_label}｜直推人數：{profile.get('direct_invites', 0)}｜團隊總人數：{profile.get('team_total', 0)}｜註冊時可將此邀請碼分享給朋友。"
-        )
-        if isinstance(self.auth_session, dict):
-            self.auth_session["invite_code"] = invite_code
-            if self.auth_session.get("remember_me"):
-                save_auth_session(self.auth_session)
-
-    def copy_my_invite_code(self):
-        sess = self.auth_session or {}
-        invite_code = clean_text(sess.get("invite_code") or "").upper()
-        if not invite_code:
-            account = clean_text(sess.get("account") or sess.get("username") or "")
-            email = clean_text(sess.get("email") or "")
-            if account or email:
-                profile = get_referral_profile(account=account, email=email)
-                invite_code = clean_text(profile.get("invite_code", "")).upper()
-                self.auth_session["invite_code"] = invite_code
-        if not invite_code:
-            messagebox.showwarning("提醒", "目前尚未取得邀請碼，請先登入。")
-            return
-        try:
-            self.clipboard_clear()
-            self.clipboard_append(invite_code)
-            self.update()
-            self.refresh_referral_widgets()
-            messagebox.showinfo("完成", f"邀請碼已複製：{invite_code}")
-        except Exception as e:
-            messagebox.showerror("複製失敗", str(e))
-
     def load_admin_users(self):
         if not self.is_creator:
             self.admin_users_status_var.set("載入失敗：非創作者權限")
@@ -6090,7 +4050,6 @@ class StockApp(tk.Tk):
             rows = [self._normalize_admin_user_item(x) for x in self._extract_admin_users(data)]
             rows = [x for x in rows if x.get("account")]
             rows = self._merge_pending_reviews_into_users(rows)
-            rows = self._merge_referral_meta_into_users(rows)
             self.admin_users = rows
             self.refresh_admin_users_tree()
             pending_total = sum(int(x.get("pending_review") or 0) for x in rows)
@@ -6144,11 +4103,6 @@ class StockApp(tk.Tk):
             f"訂閱到期：{row.get('subscription_end_at','-')}",
             f"試用到期：{row.get('trial_end_at','-')}",
             f"待審核付款：{row.get('pending_review',0)}",
-            f"我的邀請碼：{row.get('invite_code','-') or '-'}",
-            f"上層帳號：{row.get('parent_account','-') or '-'}",
-            f"上層邀請碼：{row.get('parent_invite_code','-') or '-'}",
-            f"直推人數：{row.get('direct_invites',0)}",
-            f"團隊總人數：{row.get('team_total',0)}",
         ]
         for key in ["created_at", "updated_at", "device_id", "device_name"]:
             val = clean_text(raw.get(key, ""))
@@ -6165,62 +4119,6 @@ class StockApp(tk.Tk):
             "email": clean_text(row.get("email", "")),
             "user_id": clean_text(raw.get("user_id") or raw.get("id") or raw.get("member_id") or raw.get("uuid") or ""),
         }
-
-    def _find_admin_user_record(self, account='', email=''):
-        account = clean_text(account)
-        email = clean_text(email)
-        for row in list(getattr(self, 'admin_users', []) or []):
-            if account and clean_text(row.get('account', '')) == account:
-                return row
-            if email and clean_text(row.get('email', '')) == email:
-                return row
-        return {}
-
-    def _compute_subscription_anchor(self, user_row=None, now_dt=None):
-        user_row = user_row or {}
-        now_dt = now_dt or datetime.now()
-        sub_end_dt = parse_datetime_flexible(user_row.get('subscription_end_at', ''))
-        trial_end_dt = parse_datetime_flexible(user_row.get('trial_end_at', ''))
-
-        if sub_end_dt and sub_end_dt > now_dt:
-            return sub_end_dt, '從既有訂閱到期日續算'
-        if trial_end_dt and trial_end_dt > now_dt:
-            return trial_end_dt, '試用期間內訂閱，從試用到期日開始計算'
-        return now_dt, '試用已結束或無試用，從審核時間開始計算'
-
-    def _build_subscription_timing_payload(self, identity, plan_type, days=None, end_at=''):
-        days = int(days or get_plan_duration_days(plan_type))
-        user_row = self._find_admin_user_record(identity.get('account', ''), identity.get('email', ''))
-        now_dt = datetime.now()
-        anchor_dt, reason = self._compute_subscription_anchor(user_row, now_dt=now_dt)
-        if end_at:
-            end_dt = parse_datetime_flexible(end_at)
-            if end_dt is None:
-                raise RuntimeError('到期日格式錯誤，請使用 YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS')
-        else:
-            end_dt = anchor_dt + timedelta(days=days)
-        payload = {
-            'account': identity.get('account'),
-            'username': identity.get('username'),
-            'email': identity.get('email'),
-            'target_account': identity.get('account'),
-            'target_username': identity.get('username'),
-            'target_email': identity.get('email'),
-            'plan_type': plan_type,
-            'subscription_status': 'active' if plan_type not in {'none', 'trial'} else plan_type,
-            'days': days,
-            'duration_days': days,
-            'grant_days': days,
-            'subscription_days': days,
-            'start_at': format_datetime_for_api(anchor_dt),
-            'effective_start_at': format_datetime_for_api(anchor_dt),
-            'approved_at': format_datetime_for_api(now_dt),
-            'reviewed_at': format_datetime_for_api(now_dt),
-            'end_at': format_datetime_for_api(end_dt),
-            'subscription_end_at': format_datetime_for_api(end_dt),
-            'anchor_reason': reason,
-        }
-        return payload, reason, anchor_dt, end_dt
 
     def manual_set_plan_selected_user(self):
         if not self.is_creator:
@@ -6240,12 +4138,26 @@ class StockApp(tk.Tk):
         except Exception:
             messagebox.showwarning("提醒", "請輸入正確的天數。")
             return
+        payload = {
+            "account": identity.get("account"),
+            "username": identity.get("username"),
+            "email": identity.get("email"),
+            "target_account": identity.get("account"),
+            "target_username": identity.get("username"),
+            "target_email": identity.get("email"),
+            "plan_type": plan_type,
+            "subscription_status": "active" if plan_type not in {"none", "trial"} else plan_type,
+            "days": days,
+            "duration_days": days,
+            "grant_days": days,
+            "subscription_days": days,
+            "end_at": end_at,
+            "subscription_end_at": end_at,
+            "note": "admin manual activation",
+        }
         try:
-            payload, reason, anchor_dt, end_dt = self._build_subscription_timing_payload(identity, plan_type, days=days, end_at=end_at)
-            payload["note"] = f"admin manual activation｜{reason}"
             data = auth_post("/admin/set-plan", payload, headers=self._auth_headers())
             msg = data.get("message", f"已為 {identity.get('account') or identity.get('email')} 手動開通 {PAYMENT_PLAN_LABELS.get(plan_type, plan_type)}。")
-            msg = f"{msg}\n起算時間：{format_datetime_for_api(anchor_dt)}\n到期時間：{format_datetime_for_api(end_dt)}"
             self.admin_users_status_var.set(msg)
             self.log(msg)
             messagebox.showinfo("成功", msg)
@@ -6679,43 +4591,12 @@ class StockApp(tk.Tk):
         confirm_text = "確定要核准這筆付款回報嗎？" if action == "approve" else "確定要駁回這筆付款回報嗎？"
         if not messagebox.askyesno("確認", confirm_text):
             return
-
-        source_rows = self.admin_payment_filtered_reports or self.admin_payment_reports
-        report_row = next((x for x in source_rows if str(x.get("report_id", "")) == str(report_id)), None)
-        plan_type = clean_text((report_row or {}).get("plan_type", ""))
-
         try:
             data = auth_post(path, {}, timeout=20, headers=self._auth_headers())
-            extra_msg = ""
-            if action == "approve" and report_row and plan_type in {"monthly", "quarterly", "halfyear", "yearly"}:
-                if not self.admin_users:
-                    try:
-                        self.load_admin_users()
-                    except Exception:
-                        pass
-                identity = {
-                    "account": clean_text(report_row.get("account", "")),
-                    "username": clean_text(report_row.get("account", "")),
-                    "email": "",
-                }
-                user_row = self._find_admin_user_record(identity.get("account", ""), "")
-                if user_row:
-                    identity["email"] = clean_text(user_row.get("email", ""))
-                days = get_plan_duration_days(plan_type)
-                timing_payload, reason, anchor_dt, end_dt = self._build_subscription_timing_payload(identity, plan_type, days=days)
-                timing_payload["note"] = f"payment approval sync｜report_id={report_id}｜{reason}"
-                try:
-                    auth_post("/admin/set-plan", timing_payload, timeout=20, headers=self._auth_headers())
-                    extra_msg = f"\n起算時間：{format_datetime_for_api(anchor_dt)}\n到期時間：{format_datetime_for_api(end_dt)}"
-                except Exception as sync_e:
-                    extra_msg = f"\n付款已核准，但同步訂閱起算邏輯失敗：{sync_e}"
-
             msg = data.get("message") or ("已核准付款回報。" if action == "approve" else "已駁回付款回報。")
-            msg = f"{msg}{extra_msg}" if extra_msg else msg
             self.admin_payment_status_var.set(msg)
             self.log(f"管理員付款審核：{action} report_id={report_id}")
             messagebox.showinfo("成功", msg)
-            self.load_admin_overview()
             self.load_admin_payment_reports()
         except Exception as e:
             messagebox.showerror("付款審核失敗", str(e))
@@ -6734,236 +4615,6 @@ class StockApp(tk.Tk):
             plan_key = "monthly"
         self.payment_plan_var.set(PAYMENT_PLAN_LABELS[plan_key])
         self.payment_amount_var.set(str(PAYMENT_PLAN_PRICES.get(plan_key, "")))
-        self.payment_savings_var.set(get_plan_savings_text(plan_key))
-
-    def _get_current_warrant_record(self):
-        account = self.get_current_account_key()
-        return get_warrant_fastscan_record(account) if account else {}
-
-    def _is_warrant_fastscan_enabled(self, account=''):
-        account = clean_text(account or self.get_current_account_key())
-        if self.is_creator:
-            return True, {"unlock_source": "creator_unlimited"}, None
-        info = self.license_info if isinstance(self.license_info, dict) else {}
-        sess = self.auth_session if isinstance(self.auth_session, dict) else {}
-        sub = clean_text(info.get('subscription_status') or sess.get('subscription_status')).lower()
-        end_raw = clean_text(info.get('subscription_end_at') or sess.get('subscription_end_at'))
-        end_dt = parse_datetime_flexible(end_raw) if end_raw else None
-        if sub in {'active', 'free_grant'}:
-            if end_dt is None or end_dt > datetime.now():
-                return True, {"unlock_source": "subscription", "subscription_status": sub}, end_dt
-        return False, {"unlock_source": "not_subscribed", "subscription_status": sub}, end_dt
-
-    def _build_warrant_watchlist_df(self):
-        rows = []
-        master = (self.latest_result or {}).get('MASTER_STOCK_LIST', pd.DataFrame())
-        for i, code in enumerate(self.warrant_watchlist, start=1):
-            name = ''
-            if isinstance(master, pd.DataFrame) and not master.empty and '股票代號' in master.columns:
-                hit = master[master['股票代號'].astype(str) == str(code)]
-                if not hit.empty:
-                    name = clean_text(hit.iloc[0].get('股票名稱', ''))
-            rows.append({'項次': i, '股票代號': code, '股票名稱': name})
-        return pd.DataFrame(rows, columns=['項次', '股票代號', '股票名稱'])
-
-    def refresh_warrant_fastscan_ui(self):
-        enabled, rec, dt = self._is_warrant_fastscan_enabled()
-        if enabled:
-            if self.is_creator:
-                status_text = "權證專區：開發者模式，永久開放"
-            else:
-                end_text = dt.strftime('%Y-%m-%d') if dt else '依會員狀態'
-                status_text = f"權證專區：有效訂閱會員可觀看（到期：{end_text}）"
-        else:
-            status_text = "權證專區：目前鎖定，需有效訂閱會員"
-        self.warrant_status_var.set(status_text)
-        if hasattr(self, 'warrant_fastscan_access_label'):
-            self.warrant_fastscan_access_label.set(status_text)
-        self.warrant_watchlist = load_warrant_watchlist(self.get_current_account_key())
-        watch_df = self._build_warrant_watchlist_df()
-        self.current_view_data['WARRANT_WATCHLIST'] = watch_df.copy()
-        if hasattr(self, 'warrant_watch_tree'):
-            self.load_df_to_tree(self.warrant_watch_tree, watch_df, "WARRANT_WATCHLIST")
-        if hasattr(self, 'warrant_result_tree') and self.current_view_data.get('WARRANT_FASTSCAN_BULLISH', pd.DataFrame()).empty:
-            empty = pd.DataFrame(columns=["項次", "股票代號", "標的現價", "標的HV60(%)", "權證代號", "權證名稱", "權證類型", "發行銀行/券商", "履約價", "價外程度(%)", "到期日", "剩餘天數", "權證收盤/成交", "行使比例"])
-            self.load_df_to_tree(self.warrant_result_tree, empty, "WARRANT_FASTSCAN_BULLISH")
-
-    def _get_latest_stock_price_for_warrant(self, code):
-        raw = (self.latest_result or {}).get('WEEKLY_MA_RAW', pd.DataFrame())
-        if isinstance(raw, pd.DataFrame) and not raw.empty and '股票代號' in raw.columns:
-            sub = raw[raw['股票代號'].astype(str) == str(code)].copy()
-            if not sub.empty:
-                sub = sub.sort_values('週結算日期')
-                for col in ['週收盤價', '最新週收盤價', '收盤價']:
-                    if col in sub.columns:
-                        val = parse_number(sub.iloc[-1].get(col))
-                        if val:
-                            return val
-        return None
-
-    def refresh_warrant_data_for_watchlist(self):
-        enabled, _, _ = self._is_warrant_fastscan_enabled()
-        if not enabled:
-            messagebox.showwarning("權限提醒", "權證專區需有效訂閱會員才可觀看。")
-            return
-        if not self.warrant_watchlist:
-            messagebox.showinfo("提醒", "尚未加入觀察權證的標的。請先在選股池標的上按右鍵 → 觀察權證。")
-            return
-        all_frames = []
-        self.set_status("正在抓取權證資料...")
-        self.log("開始更新權證觀察清單")
-        for code in list(self.warrant_watchlist):
-            price = self._get_latest_stock_price_for_warrant(code)
-            hv60 = calc_hv_60_from_weekly(self.latest_result, code)
-            df = fetch_warrants_for_stock(code, stock_price=price, hv60=hv60, logger=self.log)
-            if df is not None and not df.empty:
-                all_frames.append(df)
-        if all_frames:
-            out = pd.concat(all_frames, ignore_index=True)
-            if '項次' in out.columns:
-                out = out.drop(columns=['項次'])
-            out.insert(0, '項次', range(1, len(out) + 1))
-        else:
-            out = pd.DataFrame(columns=["項次", "股票代號", "標的現價", "標的HV60(%)", "權證代號", "權證名稱", "權證類型", "發行銀行/券商", "履約價", "價外程度(%)", "到期日", "剩餘天數", "權證收盤/成交", "行使比例"])
-        self.current_view_data['WARRANT_FASTSCAN_BULLISH'] = out.copy()
-        if hasattr(self, 'warrant_result_tree'):
-            self.load_df_to_tree(self.warrant_result_tree, out, "WARRANT_FASTSCAN_BULLISH")
-
-        # 手機版同步：權證資料更新後自動上傳，讓手機權證專區有真實資料
-        upload_mobile_stock_results(
-            getattr(self, "latest_result", {}),
-            current_view_data=getattr(self, "current_view_data", {}),
-            logger=self.log,
-            show_message=True
-        )
-
-        self.set_status("權證資料更新完成")
-        self.log(f"權證資料更新完成，共 {len(out)} 筆")
-        if out.empty:
-            messagebox.showinfo("完成", "已更新，但目前仍沒有抓到符合條件的權證。可能原因：交易所/券商資料源暫時無回應、該標的沒有符合 90 天以上且價外 10～15% 的權證，或公開資料欄位改版。請看下方狀態/日誌是否有 MoneyLink / OpenAPI 來源成功或失敗訊息。")
-
-    def on_warrant_watch_select(self, event=None):
-        try:
-            tree = self.warrant_watch_tree
-            selected = tree.selection()
-            if not selected:
-                return
-            cols = list(tree['columns'])
-            vals = tree.item(selected[0], 'values')
-            if '股票代號' in cols:
-                code = vals[cols.index('股票代號')]
-                self.warrant_selected_code_var.set(f"觀察標的：{code}")
-        except Exception:
-            pass
-
-    def add_selected_code_to_warrant_watchlist(self):
-        code = self.get_selected_code()
-        if not code:
-            messagebox.showwarning("提醒", "請先選擇一檔標的。")
-            return
-        code = normalize_code(code)
-        if not is_valid_stock_code(code):
-            messagebox.showwarning("提醒", "請先選擇正確的 4 碼股票標的。")
-            return
-        self.warrant_watchlist = load_warrant_watchlist(self.get_current_account_key())
-        if code in self.warrant_watchlist:
-            messagebox.showinfo("提醒", f"{code} 已在權證觀察清單中。")
-            return
-        self.warrant_watchlist.append(code)
-        save_warrant_watchlist(self.warrant_watchlist, self.get_current_account_key())
-        self.refresh_warrant_fastscan_ui()
-        self.log(f"已加入權證觀察：{code}")
-        messagebox.showinfo("完成", f"{code} 已加入權證觀察清單。")
-
-    def remove_selected_warrant_watch_code(self):
-        if not hasattr(self, 'warrant_watch_tree'):
-            return
-        selected = self.warrant_watch_tree.selection()
-        if not selected:
-            messagebox.showwarning("提醒", "請先選擇要刪除的觀察標的。")
-            return
-        cols = list(self.warrant_watch_tree['columns'])
-        vals = self.warrant_watch_tree.item(selected[0], 'values')
-        if '股票代號' not in cols:
-            return
-        code = normalize_code(vals[cols.index('股票代號')])
-        self.warrant_watchlist = [x for x in load_warrant_watchlist(self.get_current_account_key()) if x != code]
-        save_warrant_watchlist(self.warrant_watchlist, self.get_current_account_key())
-        self.refresh_warrant_fastscan_ui()
-        self.log(f"已刪除權證觀察：{code}")
-
-    def _set_selected_user_warrant_fastscan(self, days, source_label):
-        if not self.is_creator:
-            messagebox.showwarning("提醒", "只有創作者帳號可以手動解鎖權證快篩。")
-            return
-        identity = self._selected_admin_identity()
-        target = clean_text(identity.get('account') or identity.get('email'))
-        if not target:
-            messagebox.showwarning("提醒", "請先選取一位會員。")
-            return
-        try:
-            days = int(days)
-            if days <= 0:
-                raise ValueError
-        except Exception:
-            messagebox.showwarning("提醒", "請輸入正確的天數。")
-            return
-
-        now_dt = datetime.now()
-        enabled, rec, current_until = self._is_warrant_fastscan_enabled(target)
-        anchor_dt = current_until if enabled and current_until else now_dt
-        end_dt = anchor_dt + timedelta(days=days)
-        record = rec if isinstance(rec, dict) else {}
-        record.update({
-            'account': target,
-            'unlock_until': format_datetime_for_api(end_dt),
-            'unlock_days_last': days,
-            'unlock_source': source_label,
-            'updated_at': format_datetime_for_api(now_dt),
-            'updated_by': clean_text((self.auth_session or {}).get('account') or (self.auth_session or {}).get('username') or ''),
-        })
-        set_warrant_fastscan_record(target, record)
-        msg = f"已為 {target} 解鎖權證快篩 {days} 天，到期：{format_datetime_for_api(end_dt)}"
-        self.admin_users_status_var.set(msg)
-        self.log(msg)
-        messagebox.showinfo("成功", msg)
-        self.load_admin_users()
-        self.refresh_warrant_fastscan_ui()
-
-    def unlock_warrant_fastscan_halfyear(self):
-        self._set_selected_user_warrant_fastscan(30, 'halfyear_manual_unlock')
-
-    def unlock_warrant_fastscan_yearly(self):
-        self._set_selected_user_warrant_fastscan(60, 'yearly_manual_unlock')
-
-    def unlock_warrant_fastscan_custom(self):
-        self._set_selected_user_warrant_fastscan(clean_text(self.admin_warrant_days_var.get()) or '30', 'custom_manual_unlock')
-
-    def disable_warrant_fastscan_selected_user(self):
-        if not self.is_creator:
-            messagebox.showwarning("提醒", "只有創作者帳號可以取消權證快篩權限。")
-            return
-        identity = self._selected_admin_identity()
-        target = clean_text(identity.get('account') or identity.get('email'))
-        if not target:
-            messagebox.showwarning("提醒", "請先選取一位會員。")
-            return
-        record = get_warrant_fastscan_record(target)
-        record.update({
-            'account': target,
-            'unlock_until': '',
-            'unlock_days_last': 0,
-            'unlock_source': 'manual_disable',
-            'updated_at': format_datetime_for_api(datetime.now()),
-            'updated_by': clean_text((self.auth_session or {}).get('account') or (self.auth_session or {}).get('username') or ''),
-        })
-        set_warrant_fastscan_record(target, record)
-        msg = f"已取消 {target} 的權證快篩權限。"
-        self.admin_users_status_var.set(msg)
-        self.log(msg)
-        messagebox.showinfo("成功", msg)
-        self.load_admin_users()
-        self.refresh_warrant_fastscan_ui()
 
     def open_payment_tab(self):
         try:
@@ -6987,7 +4638,6 @@ class StockApp(tk.Tk):
         self.payment_last5_var.set('')
         self.payment_amount_var.set('')
         self.payment_status_var.set('請選擇方案並完成付款回報。')
-        self.payment_savings_var.set(get_plan_savings_text('monthly'))
 
     def update_payment_tab_state(self):
         account = clean_text((self.auth_session or {}).get('username') or (self.auth_session or {}).get('account') or (self.auth_session or {}).get('email'))
@@ -6999,10 +4649,7 @@ class StockApp(tk.Tk):
             self.payment_bank_combo.config(state=readonly)
             self.payment_last5_entry.config(state=state)
             self.payment_amount_entry.config(state=state)
-            self.payment_payer_name_entry.config(state=state)
             self.payment_submit_btn.config(state=state)
-            self.feedback_topic_combo.config(state=readonly)
-            self.feedback_text.config(state=state)
         except Exception:
             pass
         if not enabled:
@@ -7225,14 +4872,9 @@ class StockApp(tk.Tk):
                 "is_creator": bool(data.get("is_creator", (self.auth_session or {}).get("is_creator", False) or (self.auth_profile or {}).get("is_creator", False))),
                 "is_admin": bool(data.get("is_admin", (self.auth_session or {}).get("is_admin", False) or (self.auth_profile or {}).get("is_admin", False))),
             }
-            ref_user = ensure_referral_user(account=session_payload.get("account", ""), email=session_payload.get("email", ""))
-            session_payload["invite_code"] = clean_text(ref_user.get("invite_code", "")).upper()
             self.auth_session = session_payload
             save_auth_session(session_payload)
-            self.reload_user_holdings(refresh_view=True)
-            self.refresh_referral_widgets()
             self.update_payment_tab_state()
-            self.refresh_warrant_fastscan_ui()
             self.update_admin_payment_review_visibility(force_refresh=True)
 
             if allowed:
@@ -7251,25 +4893,6 @@ class StockApp(tk.Tk):
             if not silent:
                 messagebox.showerror("授權失敗", f"無法驗證授權：{e}")
             return False
-
-    def get_current_account_key(self):
-        sess = self.auth_session or {}
-        return clean_text(sess.get("username") or sess.get("account") or sess.get("email") or "")
-
-    def reload_user_holdings(self, refresh_view=False):
-        account = self.get_current_account_key()
-        self.user_holdings = load_holdings(account) if account else []
-        self.warrant_watchlist = load_warrant_watchlist(account) if account else []
-        if refresh_view:
-            try:
-                self.refresh_warrant_fastscan_ui()
-            except Exception:
-                pass
-        if refresh_view and hasattr(self, "sheet_trees") and "MY_HOLDINGS" in getattr(self, "sheet_trees", {}):
-            try:
-                self.refresh_holdings_view()
-            except Exception:
-                pass
 
     def lock_features(self, reason="未授權"):
         self.analysis_allowed = False
@@ -7298,11 +4921,7 @@ class StockApp(tk.Tk):
         self.license_info = {}
         self.user_email_var.set("帳號：尚未登入")
         self.license_var.set("授權：尚未驗證")
-        self.user_holdings = []
-        self.refresh_holdings_view()
-        self.refresh_referral_widgets()
         self.update_payment_tab_state()
-        self.refresh_warrant_fastscan_ui()
         self.lock_features(reason="已登出")
         self.open_auth_dialog()
 
@@ -7323,7 +4942,7 @@ class StockApp(tk.Tk):
         if self.running:
             messagebox.showinfo("提醒", "分析仍在執行中，請稍候。")
             return
-        ok = messagebox.askyesno("確認", "這會重新抓網路資料並重新分析，且覆蓋同日快照，是否繼續？")
+        ok = messagebox.askyesno("確認", "這會重新抓網路資料並覆蓋同日快照，是否繼續？")
         if not ok:
             return
         th = threading.Thread(target=self.run_analysis, args=(True,), daemon=True)
@@ -7338,7 +4957,7 @@ class StockApp(tk.Tk):
 
         try:
             if force_rebuild_snapshot:
-                self.log("開始強制重新分析...")
+                self.log("開始強制重建當日快照...")
             else:
                 self.log("開始執行分析...")
 
@@ -7347,14 +4966,6 @@ class StockApp(tk.Tk):
             self.latest_excel_path = result.get("excel_path", OUTPUT_XLSX)
 
             self.refresh_notebook(result)
-
-            # 手機版同步：分析完成後自動上傳看多 / 看空 / 權證資料
-            upload_mobile_stock_results(
-                result,
-                current_view_data=getattr(self, "current_view_data", {}),
-                logger=self.log,
-                show_message=False
-            )
 
             settle_date = result.get("settle_date", "未知")
             bull_count = len(result.get("CLIENT_BULLISH", pd.DataFrame()))
@@ -7408,7 +5019,6 @@ class StockApp(tk.Tk):
             self.load_df_to_tree(self.sheet_trees[sheet], self.current_view_data[sheet], sheet)
 
         self.refresh_holdings_view(select_first=False)
-        self.refresh_warrant_fastscan_ui()
         self.after(100, self.select_first_row_and_refresh)
 
     def refresh_holdings_view(self, select_first=True):
@@ -7437,60 +5047,21 @@ class StockApp(tk.Tk):
                 tree.see(items[0])
                 self.update_selected_stock_display()
 
-    def add_holding_by_code(self, code, clear_entry=False, show_message=False):
-        code = normalize_code(code)
+    def add_holding_code(self):
+        code = normalize_code(self.holding_code_var.get())
         if not is_valid_stock_code(code):
-            if show_message:
-                messagebox.showwarning("提醒", "請輸入正確的 4 碼股票代號。")
-            return False
+            messagebox.showwarning("提醒", "請輸入正確的 4 碼股票代號。")
+            return
         if code in self.user_holdings:
-            if show_message:
-                messagebox.showinfo("提醒", f"{code} 已經在持股清單中。")
-            return False
+            messagebox.showinfo("提醒", f"{code} 已經在持股清單中。")
+            return
 
         self.user_holdings.append(code)
         self.user_holdings = list(dict.fromkeys(self.user_holdings))
-        save_holdings(self.user_holdings, self.get_current_account_key())
-        if clear_entry and hasattr(self, "holding_code_var"):
-            self.holding_code_var.set("")
+        save_holdings(self.user_holdings)
+        self.holding_code_var.set("")
         self.log(f"已加入持股：{code}")
         self.refresh_holdings_view()
-        if show_message:
-            messagebox.showinfo("完成", f"{code} 已加入持股。")
-        return True
-
-    def add_holding_code(self):
-        code = self.holding_code_var.get()
-        self.add_holding_by_code(code, clear_entry=True, show_message=True)
-
-    def add_selected_code_to_holdings(self):
-        code = self.get_selected_code()
-        if not code:
-            messagebox.showwarning("提醒", "請先選擇一檔標的。")
-            return
-        self.add_holding_by_code(code, clear_entry=False, show_message=True)
-
-    def on_tree_right_click(self, event):
-        try:
-            tree = event.widget
-            row_id = tree.identify_row(event.y)
-            if not row_id:
-                return
-
-            tree.selection_set(row_id)
-            tree.focus(row_id)
-            self.update_selected_stock_display()
-
-            cols = list(tree["columns"])
-            if "股票代號" not in cols:
-                return
-
-            self.stock_context_menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            try:
-                self.stock_context_menu.grab_release()
-            except Exception:
-                pass
 
     def remove_selected_holding(self):
         tree = self.sheet_trees["MY_HOLDINGS"]
@@ -7508,7 +5079,7 @@ class StockApp(tk.Tk):
 
         if code in self.user_holdings:
             self.user_holdings.remove(code)
-            save_holdings(self.user_holdings, self.get_current_account_key())
+            save_holdings(self.user_holdings)
             self.log(f"已刪除持股：{code}")
             self.refresh_holdings_view()
 
@@ -7525,14 +5096,11 @@ class StockApp(tk.Tk):
         for item in tree.get_children():
             tree.delete(item)
 
-        if df is None:
+        if df is None or df.empty:
             tree["columns"] = []
             return
 
         cols = list(df.columns)
-        if len(cols) == 0:
-            tree["columns"] = []
-            return
         tree["columns"] = cols
 
         for c in cols:
@@ -7556,8 +5124,6 @@ class StockApp(tk.Tk):
                 tree.column(c, width=120, anchor="center")
             elif c == "星等":
                 tree.column(c, width=100, anchor="center")
-            elif c == "StrongScore":
-                tree.column(c, width=110, anchor="center")
             elif c == "意見":
                 tree.column(c, width=150, anchor="center")
             else:
@@ -7625,16 +5191,7 @@ class StockApp(tk.Tk):
         self.current_view_data[sheet_name] = tmp
         self.tree_sort_state[sheet_name] = {"column": column_name, "ascending": ascending}
 
-        # 一般選股分頁使用 self.sheet_trees；權證專區是獨立 Treeview，需另外指定。
-        if sheet_name == "WARRANT_FASTSCAN_BULLISH" and hasattr(self, "warrant_result_tree"):
-            tree = self.warrant_result_tree
-        elif sheet_name == "WARRANT_WATCHLIST" and hasattr(self, "warrant_watch_tree"):
-            tree = self.warrant_watch_tree
-        else:
-            tree = self.sheet_trees.get(sheet_name) if hasattr(self, "sheet_trees") else None
-        if tree is None:
-            return
-
+        tree = self.sheet_trees[sheet_name]
         self.load_df_to_tree(tree, tmp, sheet_name)
 
         items = tree.get_children()
@@ -7642,11 +5199,7 @@ class StockApp(tk.Tk):
             tree.selection_set(items[0])
             tree.focus(items[0])
             tree.see(items[0])
-            if sheet_name in ["WARRANT_FASTSCAN_BULLISH", "WARRANT_WATCHLIST"]:
-                if sheet_name == "WARRANT_WATCHLIST":
-                    self.on_warrant_watch_select()
-            else:
-                self.update_selected_stock_display()
+            self.update_selected_stock_display()
 
     def get_current_sheet_name(self):
         cur_tab = self.notebook.select()
@@ -7752,183 +5305,6 @@ class StockApp(tk.Tk):
         self.chart_canvas = FigureCanvasTkAgg(fig, master=self.chart_container)
         self.chart_canvas.draw()
         self.chart_canvas.get_tk_widget().pack(fill="both", expand=True)
-
-    def _fetch_listed_fundamental_snapshot(self, code, trade_date):
-        try:
-            r = safe_get(
-                "https://www.twse.com.tw/exchangeReport/BWIBBU_d",
-                params={
-                    "response": "json",
-                    "date": trade_date.strftime("%Y%m%d"),
-                    "selectType": "ALL",
-                },
-                timeout=20,
-            )
-            data = r.json()
-            fields = [clean_text(x) for x in data.get("fields", [])]
-            rows = data.get("data", []) or []
-            if not rows:
-                return {}
-            idx_map = {name: i for i, name in enumerate(fields)}
-            for row in rows:
-                if not row:
-                    continue
-                if normalize_code(row[0]) != str(code):
-                    continue
-                def _pick(*names):
-                    for name in names:
-                        idx = idx_map.get(name)
-                        if idx is not None and idx < len(row):
-                            return clean_text(row[idx])
-                    return ""
-                return {
-                    "source": "TWSE",
-                    "yield_pct": _pick("殖利率(%)", "殖利率(%)"),
-                    "dividend_year": _pick("股利年度", "股利  年度", "股利年度"),
-                    "pe_ratio": _pick("本益比"),
-                    "pb_ratio": _pick("股價淨值比", "股價淨值比"),
-                    "fiscal_period": _pick("財報年/季", "財報年/季"),
-                }
-        except Exception:
-            return {}
-        return {}
-
-    def _fetch_otc_fundamental_snapshot(self, code, trade_date):
-        try:
-            r = safe_get(
-                "https://www.tpex.org.tw/web/stock/aftertrading/peratio_analysis/pera_result.php",
-                params={
-                    "l": "zh-tw",
-                    "d": roc_date_str(trade_date),
-                    "o": "json",
-                    "s": "0,asc,0",
-                },
-                timeout=20,
-            )
-            data = r.json()
-            rows = data.get("aaData", []) or []
-            if not rows:
-                return {}
-            tables = data.get("tables") or []
-            fields = []
-            if tables and isinstance(tables, list) and isinstance(tables[0], dict):
-                fields = [clean_text(x) for x in tables[0].get("fields", [])]
-            idx_map = {name: i for i, name in enumerate(fields)}
-            for row in rows:
-                if not row:
-                    continue
-                if normalize_code(row[0]) != str(code):
-                    continue
-                def _pick_by_name(*names):
-                    for name in names:
-                        idx = idx_map.get(name)
-                        if idx is not None and idx < len(row):
-                            return clean_text(row[idx])
-                    return ""
-                result = {
-                    "source": "TPEX",
-                    "yield_pct": _pick_by_name("殖利率(%)", "殖利率"),
-                    "dividend_year": _pick_by_name("股利年度"),
-                    "pe_ratio": _pick_by_name("本益比", "PER"),
-                    "pb_ratio": _pick_by_name("股價淨值比", "股價淨值比", "PBR"),
-                    "fiscal_period": _pick_by_name("財報年/季"),
-                }
-                if not any(result.values()):
-                    result.update({
-                        "yield_pct": clean_text(row[4]) if len(row) > 4 else "",
-                        "pe_ratio": clean_text(row[5]) if len(row) > 5 else "",
-                        "pb_ratio": clean_text(row[6]) if len(row) > 6 else "",
-                    })
-                return result
-        except Exception:
-            return {}
-        return {}
-
-    def get_fundamental_snapshot(self, code):
-        code = normalize_code(code)
-        if not code:
-            return {}
-        if code in self.fundamental_cache:
-            return self.fundamental_cache.get(code, {})
-
-        latest_dt = None
-        try:
-            twse_all = self.latest_result.get("TWSE_ALL", pd.DataFrame())
-            if isinstance(twse_all, pd.DataFrame) and not twse_all.empty:
-                one = twse_all[twse_all["股票代號"].astype(str) == str(code)]
-                if not one.empty:
-                    date_str = clean_text(one.iloc[0].get("週結算日期", ""))
-                    if date_str:
-                        latest_dt = pd.to_datetime(date_str, errors="coerce")
-        except Exception:
-            latest_dt = None
-        if latest_dt is None or pd.isna(latest_dt):
-            latest_dt = pd.Timestamp(datetime.now().date())
-        trade_date = latest_dt.to_pydatetime() if hasattr(latest_dt, 'to_pydatetime') else latest_dt
-
-        master = self.latest_result.get("MASTER_STOCK_LIST", pd.DataFrame())
-        market = ""
-        if isinstance(master, pd.DataFrame) and not master.empty:
-            one = master[master["股票代號"].astype(str) == str(code)]
-            if not one.empty:
-                market = clean_text(one.iloc[0].get("市場別", ""))
-
-        result = {}
-        if market == "上櫃":
-            result = self._fetch_otc_fundamental_snapshot(code, trade_date)
-        else:
-            result = self._fetch_listed_fundamental_snapshot(code, trade_date)
-            if not result:
-                result = self._fetch_otc_fundamental_snapshot(code, trade_date)
-
-        pe = parse_number(result.get("pe_ratio"))
-        pb = parse_number(result.get("pb_ratio"))
-        dy = parse_number(result.get("yield_pct"))
-
-        comment_parts = []
-        if pe is not None:
-            if pe <= 0:
-                comment_parts.append("本益比異常或公司可能虧損，需再看獲利品質")
-            elif pe < 12:
-                comment_parts.append("本益比偏低，市場評價相對保守")
-            elif pe <= 20:
-                comment_parts.append("本益比落在中性區")
-            else:
-                comment_parts.append("本益比偏高，需留意成長是否能支撐估值")
-        if pb is not None:
-            if pb < 1:
-                comment_parts.append("股價淨值比低於 1，偏資產保守評價")
-            elif pb <= 2:
-                comment_parts.append("股價淨值比落在合理區")
-            else:
-                comment_parts.append("股價淨值比偏高，市場給予較高溢價")
-        if dy is not None:
-            if dy >= 5:
-                comment_parts.append("現金殖利率偏高，具股息防禦性")
-            elif dy >= 2:
-                comment_parts.append("殖利率中性")
-            else:
-                comment_parts.append("殖利率偏低，較偏向成長或評價型")
-
-        result["commentary"] = "；".join(comment_parts) if comment_parts else "目前抓不到完整基本面數值，建議再搭配財報與月營收確認。"
-        self.fundamental_cache[code] = result
-        return result
-
-    def build_fundamental_lines(self, code):
-        info = self.get_fundamental_snapshot(code)
-        if not info:
-            return ["", "【基本面分析】", "目前抓不到基本面資料，建議再搭配財報、月營收與法人資訊判斷。"]
-        return [
-            "",
-            "【基本面分析】",
-            f"資料來源：{clean_text(info.get('source', '公開資料'))}",
-            f"股利年度：{clean_text(info.get('dividend_year', '')) or '—'}",
-            f"財報年/季：{clean_text(info.get('fiscal_period', '')) or '—'}",
-            f"本益比：{clean_text(info.get('pe_ratio', '')) or '—'}",
-            f"股價淨值比：{clean_text(info.get('pb_ratio', '')) or '—'}",
-            f"殖利率(%): {clean_text(info.get('yield_pct', '')) or '—'}",
-            f"基本面判讀：{clean_text(info.get('commentary', '')) or '—'}",
-        ]
 
     def update_detail_text(self, code):
         sheet = self.get_current_sheet_name()
@@ -8092,10 +5468,18 @@ class StockApp(tk.Tk):
                     f"系統意見：可提供意見",
                 ]
             else:
-                ai_info = build_ai_holding_opinion(code, self.latest_result)
-                lines = ai_info.get("detail_lines", [f"股票代號：{code}", "AI技術觀察：資料不足。"])
+                lines = [
+                    f"股票代號：{code}",
+                    "",
+                    "持股判定：非系統選股池",
+                    "系統意見：無法提供意見",
+                    "",
+                    "說明：",
+                    "1. 這檔股票不在目前的看多 / 看空選股池內。",
+                    "2. 系統不提供買賣建議與判斷。",
+                    "3. 仍可顯示週K線與基本資訊供參考。"
+                ]
 
-        lines.extend(self.build_fundamental_lines(code))
         self.set_readonly_text(self.detail_text, "\n".join(lines))
 
     def update_company_info_text(self, code):
@@ -8212,157 +5596,6 @@ class StockApp(tk.Tk):
 
     def open_output_folder(self):
         pass
-
-
-    def setup_background_tasks(self):
-        try:
-            self.schedule_daily_auto_update_loop()
-        except Exception as e:
-            self.log(f"每日自動更新排程啟動失敗：{e}")
-        try:
-            if bool(self.app_settings.get("startup_check_update", True)):
-                self.after(1500, lambda: self.check_for_app_update(show_no_update=False, manual=False))
-        except Exception as e:
-            self.log(f"啟動自動檢查更新失敗：{e}")
-
-    def schedule_daily_auto_update_loop(self):
-        if self.daily_auto_update_job is not None:
-            try:
-                self.after_cancel(self.daily_auto_update_job)
-            except Exception:
-                pass
-            self.daily_auto_update_job = None
-
-        def _job():
-            try:
-                self.maybe_run_daily_auto_update()
-            finally:
-                self.daily_auto_update_job = self.after(60 * 1000, _job)
-
-        self.daily_auto_update_job = self.after(10 * 1000, _job)
-
-    def maybe_run_daily_auto_update(self):
-        if not self.daily_auto_update_enabled:
-            return
-        if self.running:
-            return
-        if not self.analysis_allowed:
-            return
-
-        now = datetime.now()
-        trigger = now.replace(hour=AUTO_DAILY_UPDATE_HOUR, minute=AUTO_DAILY_UPDATE_MINUTE, second=0, microsecond=0)
-        if now < trigger:
-            return
-
-        target_date = get_effective_reference_today().strftime("%Y-%m-%d")
-        last_done = clean_text(self.app_settings.get("last_daily_auto_update_date", ""))
-        if last_done == target_date:
-            return
-
-        self.log(f"到達每日自動更新時段，開始執行 {target_date} 分析。")
-        self.app_settings["last_daily_auto_update_date"] = target_date
-        save_app_settings(self.app_settings)
-        self.run_analysis_thread()
-
-    def _parse_version_tuple(self, version_text):
-        nums = re.findall(r"\d+", str(version_text or ""))
-        return tuple(int(x) for x in nums) if nums else (0,)
-
-    def _download_file(self, url, dst_path):
-        ensure_output_dir()
-        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-        with requests.get(url, stream=True, timeout=60, verify=get_certifi_pem_path()) as r:
-            r.raise_for_status()
-            with open(dst_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1024 * 128):
-                    if chunk:
-                        f.write(chunk)
-        return dst_path
-
-    def check_for_app_update(self, show_no_update=True, manual=False):
-        try:
-            r = safe_get(APP_UPDATE_MANIFEST_URL, timeout=20)
-            manifest = r.json()
-        except Exception as e:
-            if manual:
-                messagebox.showwarning("更新提醒", f"目前無法取得新版資訊：{e}")
-            else:
-                self.log(f"自動檢查更新失敗：{e}")
-            return
-
-        latest_version = clean_text(manifest.get("version", ""))
-        download_url = clean_text(manifest.get("download_url", ""))
-        notes = clean_text(manifest.get("notes", ""))
-        if not latest_version:
-            if manual:
-                messagebox.showwarning("更新提醒", "伺服器尚未提供版本資訊。")
-            return
-
-        if self._parse_version_tuple(latest_version) <= self._parse_version_tuple(APP_VERSION):
-            if show_no_update:
-                messagebox.showinfo("更新提醒", f"目前已是最新版本。\n目前版本：{APP_VERSION}")
-            return
-
-        msg = f"偵測到新版：{latest_version}\n目前版本：{APP_VERSION}"
-        if notes:
-            msg += f"\n\n更新說明：\n{notes}"
-        if not download_url:
-            messagebox.showinfo("更新提醒", msg + "\n\n伺服器尚未提供下載連結。")
-            return
-
-        go = messagebox.askyesno("更新提醒", msg + "\n\n是否立即下載更新包？")
-        if not go:
-            return
-        self.download_and_prepare_update(download_url, latest_version)
-
-    def download_and_prepare_update(self, download_url, latest_version):
-        try:
-            parsed = urlparse(download_url)
-            filename = os.path.basename(parsed.path) or f"ZHU_STOCK_APP_{latest_version}.exe"
-            dst_path = os.path.join(APP_UPDATES_DIR, filename)
-            self.set_status("下載更新包中...")
-            self._download_file(download_url, dst_path)
-            self.set_status("更新包下載完成")
-        except Exception as e:
-            messagebox.showerror("更新失敗", f"下載更新包失敗：{e}")
-            self.set_status("更新下載失敗")
-            return
-
-        if getattr(sys, "frozen", False) and str(dst_path).lower().endswith(".exe"):
-            try:
-                self.prepare_exe_replace_update(dst_path, latest_version)
-                return
-            except Exception as e:
-                self.log(f"自動套用新版失敗，改為保留安裝包：{e}")
-
-        messagebox.showinfo("更新完成", f"新版安裝包已下載完成：\n{dst_path}\n\n請關閉目前程式後執行新檔案完成更新。")
-
-    def prepare_exe_replace_update(self, new_exe_path, latest_version):
-        current_exe = sys.executable
-        current_dir = os.path.dirname(current_exe)
-        new_name = os.path.basename(current_exe)
-        staged_path = os.path.join(current_dir, new_name + ".new")
-        shutil.copy2(new_exe_path, staged_path)
-
-        bat_path = os.path.join(APP_UPDATES_DIR, "apply_update.bat")
-        bat = (
-            "@echo off\n"
-            "chcp 65001 >nul\n"
-            "setlocal\n"
-            "ping 127.0.0.1 -n 3 >nul\n"
-            f'copy /Y "{staged_path}" "{current_exe}" >nul\n'
-            f'start "" "{current_exe}"\n'
-            "exit\n"
-        )
-        with open(bat_path, "w", encoding="utf-8") as f:
-            f.write(bat)
-
-        answer = messagebox.askyesno("更新完成", f"新版 {latest_version} 已下載完成。\n\n是否現在關閉程式並套用更新？")
-        if answer:
-            subprocess.Popen(["cmd", "/c", bat_path], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            self.destroy()
-        else:
-            messagebox.showinfo("更新提醒", f"更新檔已準備完成：\n{bat_path}\n\n下次關閉程式後可手動執行更新。")
 
     def start_auto_refresh(self):
         if not self.analysis_allowed:
