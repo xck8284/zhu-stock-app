@@ -15,8 +15,8 @@ def fetch_twse_data():
     res.raise_for_status()
     data = res.json()
 
-    rows = data.get("data9") or data.get("data") or []
-    fields = data.get("fields9") or data.get("fields") or []
+   rows = data.get("data9") or data.get("data8") or data.get("data") or []
+columns = data.get("fields9") or data.get("fields8") or data.get("fields") or []
 
     if not rows:
         return pd.DataFrame(columns=["code", "name", "close", "change", "volume"])
