@@ -3,75 +3,45 @@ import pandas as pd
 
 
 def fetch_twse_data():
-    url = "https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&type=ALLBUT0999"
+    url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 
     headers = {
         "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json,text/plain,*/*",
-        "Referer": "https://www.twse.com.tw/",
+        "Accept": "application/json",
     }
 
-    res = requests.get(url, headers=headers, timeout=15)
+    res = requests.get(url, headers=headers, timeout=20)
     res.raise_for_status()
     data = res.json()
 
-    rows = data.get("data9") or data.get("data8") or data.get("data") or []
-    fields = data.get("fields9") or data.get("fields8") or data.get("fields") or []
-
-    if not rows:
-        return pd.DataFrame(columns=["code", "name", "close", "change", "volume"])
-
     out = []
-
-    code_i = fields.index("證券代號") if "證券代號" in fields else 0
-    name_i = fields.index("證券名稱") if "證券名稱" in fields else 1
-    close_i = fields.index("收盤價") if "收盤價" in fields else 8
-    change_i = fields.index("漲跌價差") if "漲跌價差" in fields else 10
-    volume_i = fields.index("成交股數") if "成交股數" in fields else 2
-
-    for r in rows:
+    for r in data:
         try:
-            code = str(r[code_i]).strip()
-            name = str(r[name_i]).strip()
-            close = str(r[close_i]).replace(",", "").replace("--", "0").strip()
-            change = str(r[change_i]).replace(",", "").replace("+", "").replace("--", "0").strip()
-            volume = str(r[volume_i]).replace(",", "").replace("--", "0").strip()
+            code = str(r.get("Code", "")).strip()
+            name = str(r.get("Name", "")).strip()
+            close = pd.to_numeric(str(r.get("ClosingPrice", "0")).replace(",", ""), errors="coerce")
+            volume = pd.to_numeric(str(r.get("TradeVolume", "0")).replace(",", ""), errors="coerce")
+
+            if not code or not name or pd.isna(close) or close <= 0:
+                continue
 
             out.append({
                 "code": code,
                 "name": name,
-                "close": pd.to_numeric(close, errors="coerce"),
-                "change": pd.to_numeric(change, errors="coerce"),
-                "volume": pd.to_numeric(volume, errors="coerce"),
+                "close": close,
+                "volume": 0 if pd.isna(volume) else volume,
+                "change": 0,
             })
         except Exception:
             continue
 
-    df = pd.DataFrame(out)
-
-    if df.empty:
-        return pd.DataFrame(columns=["code", "name", "close", "change", "volume"])
-
-    df["close"] = df["close"].fillna(0)
-    df["change"] = df["change"].fillna(0)
-    df["volume"] = df["volume"].fillna(0)
-
-    df = df[df["close"] > 0]
-
-    return df
+    return pd.DataFrame(out)
 
 
 def calc_score(row):
     score = 0
-
-    change = float(row["change"])
     volume = float(row["volume"])
     close = float(row["close"])
-
-    if change > 0:
-        score += 20
-    elif change < 0:
-        score -= 10
 
     if volume > 10000000:
         score += 20
@@ -80,7 +50,9 @@ def calc_score(row):
     elif volume > 1000000:
         score += 5
 
-    if close < 50:
+    if 50 <= close <= 200:
+        score += 10
+    elif close < 50:
         score += 5
     elif close > 200:
         score -= 5
@@ -89,11 +61,11 @@ def calc_score(row):
 
 
 def stars_from_score(score):
-    if score >= 35:
+    if score >= 30:
         return "★★★★★"
-    if score >= 25:
+    if score >= 20:
         return "★★★★☆"
-    if score >= 15:
+    if score >= 10:
         return "★★★☆☆"
     if score >= 5:
         return "★★☆☆☆"
