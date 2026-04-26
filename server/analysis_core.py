@@ -4,24 +4,49 @@ import pandas as pd
 
 def fetch_twse_data():
     url = "https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&type=ALLBUT0999"
-    headers = {
-    "User-Agent": "Mozilla/5.0",
-    "Accept": "application/json",
-}
 
-res = requests.get(url, headers=headers, timeout=10)
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+    }
+
+    res = requests.get(url, headers=headers, timeout=10)
+    res.raise_for_status()
     data = res.json()
 
-    rows = data["data9"]
-    columns = data["fields9"]
+    rows = data.get("data9") or data.get("data") or []
+    columns = data.get("fields9") or data.get("fields") or []
+
+    if not rows or not columns:
+        return pd.DataFrame(columns=["code", "name", "close", "change", "volume"])
 
     df = pd.DataFrame(rows, columns=columns)
 
-    df = df[["證券代號", "證券名稱", "收盤價", "漲跌價差", "成交股數"]]
+    need_cols = ["證券代號", "證券名稱", "收盤價", "漲跌價差", "成交股數"]
+    for c in need_cols:
+        if c not in df.columns:
+            return pd.DataFrame(columns=["code", "name", "close", "change", "volume"])
+
+    df = df[need_cols].copy()
     df.columns = ["code", "name", "close", "change", "volume"]
 
-    df["close"] = df["close"].str.replace(",", "").astype(float)
-    df["volume"] = df["volume"].str.replace(",", "").astype(float)
+    df["close"] = (
+        df["close"]
+        .astype(str)
+        .str.replace(",", "", regex=False)
+        .str.replace("--", "0", regex=False)
+    )
+    df["volume"] = (
+        df["volume"]
+        .astype(str)
+        .str.replace(",", "", regex=False)
+        .str.replace("--", "0", regex=False)
+    )
+
+    df["close"] = pd.to_numeric(df["close"], errors="coerce").fillna(0)
+    df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0)
+
+    df = df[(df["code"].astype(str).str.len() == 4) & (df["close"] > 0)]
 
     return df
 
@@ -29,38 +54,49 @@ res = requests.get(url, headers=headers, timeout=10)
 def calc_score(row):
     score = 0
 
-    # 價格動能
-    if row["change"] != "--":
-        try:
-            change = float(row["change"])
-            if change > 0:
-                score += 20
-            elif change < 0:
-                score -= 10
-        except:
-            pass
+    try:
+        change = float(str(row["change"]).replace(",", "").replace("+", ""))
+        if change > 0:
+            score += 20
+        elif change < 0:
+            score -= 10
+    except Exception:
+        pass
 
-    # 量能
-    if row["volume"] > 10000000:
+    volume = float(row["volume"])
+    close = float(row["close"])
+
+    if volume > 10000000:
         score += 20
-    elif row["volume"] > 5000000:
+    elif volume > 5000000:
         score += 10
-    elif row["volume"] > 1000000:
+    elif volume > 1000000:
         score += 5
 
-    # 價格大小
-    if row["close"] < 50:
+    if close < 50:
         score += 5
-    elif row["close"] > 200:
+    elif close > 200:
         score -= 5
 
     return score
 
 
+def stars_from_score(score):
+    if score >= 35:
+        return "★★★★★"
+    if score >= 25:
+        return "★★★★☆"
+    if score >= 15:
+        return "★★★☆☆"
+    if score >= 5:
+        return "★★☆☆☆"
+    return "★☆☆☆☆"
+
+
 def run_analysis_core():
     try:
         df = fetch_twse_data()
-    except Exception as e:
+    except Exception:
         return {
             "bullish": [],
             "bearish": [],
@@ -74,11 +110,11 @@ def run_analysis_core():
             score = calc_score(row)
 
             item = {
-                "code": row["code"],
-                "name": row["name"],
+                "code": str(row["code"]),
+                "name": str(row["name"]),
                 "industry": "",
                 "settle_date": "",
-                "stars": "★" * max(1, min(5, score // 20)),
+                "stars": stars_from_score(score),
                 "strong_score": round(score, 2),
                 "bias": 0,
                 "short_alarm": "否",
@@ -86,8 +122,7 @@ def run_analysis_core():
             }
 
             result.append(item)
-
-        except:
+        except Exception:
             continue
 
     result = sorted(result, key=lambda x: x["strong_score"], reverse=True)
