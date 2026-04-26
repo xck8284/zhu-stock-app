@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+sqlalchemy
+pydantic[email]
+pydantic-settings
+python-dotenv
+bcrypt
+passlib[bcrypt]
+PyJWT
+sib-api-v3-sdk
