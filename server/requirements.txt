@@ -8,3 +8,4 @@ bcrypt
 passlib[bcrypt]
 PyJWT
 sib-api-v3-sdk
+requests
