@@ -1172,3 +1172,47 @@ def get_bullish():
     return {
         "items": BULLISH_DATA
     }
+
+BEARISH_DATA = []
+
+@app.get("/run-bearish-analysis")
+def run_bearish_analysis():
+
+    global BEARISH_DATA
+
+    BEARISH_DATA = [
+        {
+            "stock_id": "2409",
+            "name": "友達",
+            "stars": "★★★★★",
+            "strong_score": 132,
+            "bias": "-8%"
+        },
+        {
+            "stock_id": "3481",
+            "name": "群創",
+            "stars": "★★★★☆",
+            "strong_score": 118,
+            "bias": "-12%"
+        },
+        {
+            "stock_id": "2618",
+            "name": "長航",
+            "stars": "★★★★★",
+            "strong_score": 126,
+            "bias": "-10%"
+        }
+    ]
+
+    return {
+        "success": True,
+        "count": len(BEARISH_DATA)
+    }
+
+
+@app.get("/bearish")
+def get_bearish():
+
+    return {
+        "items": BEARISH_DATA
+    }
