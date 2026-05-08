@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>用戶回饋</title>
+
+<style>
+body{
+    background:#071633;
+    color:white;
+    font-family:Arial;
+    margin:0;
+    padding:20px;
+}
+
+.container{
+    background:#1b2a47;
+    border-radius:20px;
+    padding:20px;
+}
+
+textarea{
+    width:100%;
+    height:250px;
+    border:none;
+    border-radius:15px;
+    padding:15px;
+    font-size:18px;
+    resize:none;
+    box-sizing:border-box;
+}
+
+.btn{
+    width:100%;
+    background:#28c95a;
+    color:white;
+    border:none;
+    border-radius:15px;
+    padding:18px;
+    font-size:24px;
+    cursor:pointer;
+    margin-top:20px;
+}
+</style>
+</head>
+
+<body>
+
+<h1>用戶回饋</h1>
+
+<div class="container">
+
+<textarea placeholder="請輸入您的建議或回饋..."></textarea>
+
+<button class="btn"
+onclick="alert('已送出回饋')">
+送出回饋
+</button>
+
+<button class="btn"
+onclick="window.location.href='dashboard.html'">
+返回後台
+</button>
+
+</div>
+
+</body>
+</html>
