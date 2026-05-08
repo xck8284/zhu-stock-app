@@ -1107,4 +1107,24 @@ def get_bullish_stocks():
         ]
     }
 
- 
+BULLISH_DATA = []
+
+@app.post("/upload/bullish")
+def upload_bullish(data: dict):
+
+    global BULLISH_DATA
+
+    BULLISH_DATA = data.get("items", [])
+
+    return {
+        "success": True,
+        "count": len(BULLISH_DATA)
+    }
+
+
+@app.get("/stocks/bullish")
+def get_bullish_stocks():
+
+    return {
+        "items": BULLISH_DATA
+    }
