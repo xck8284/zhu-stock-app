@@ -10,7 +10,10 @@ body{margin:0;background:#0f172a;color:white;font-family:Arial}
 .container{padding:20px}
 .card{background:#1e293b;border-radius:20px;padding:20px;margin-bottom:20px;overflow:auto}
 .btn{width:100%;border:none;padding:15px;border-radius:12px;background:#22c55e;color:white;font-size:18px;cursor:pointer;margin-top:15px}
-pre{white-space:pre-wrap}
+table{width:100%;border-collapse:collapse;min-width:900px}
+th,td{border-bottom:1px solid #334155;padding:12px;text-align:left;font-size:14px}
+th{color:#93c5fd}
+.badge{padding:4px 8px;border-radius:8px;background:#334155}
 </style>
 </head>
 <body>
@@ -40,10 +43,48 @@ async function loadUsers(){
   });
 
   const data = await res.json();
-  console.log(data);
 
-  document.getElementById("list").innerHTML =
-    "<pre>" + JSON.stringify(data, null, 2) + "</pre>";
+  if(!data.success){
+    document.getElementById("list").innerHTML = "讀取失敗";
+    return;
+  }
+
+  const users = data.items || [];
+
+  let html = `
+    <table>
+      <tr>
+        <th>ID</th>
+        <th>帳號</th>
+        <th>Email</th>
+        <th>電話</th>
+        <th>狀態</th>
+        <th>方案</th>
+        <th>剩餘天數</th>
+        <th>到期日</th>
+        <th>最高權限</th>
+      </tr>
+  `;
+
+  users.forEach(u => {
+    html += `
+      <tr>
+        <td>${u.id ?? ""}</td>
+        <td>${u.username ?? ""}</td>
+        <td>${u.email ?? ""}</td>
+        <td>${u.phone ?? ""}</td>
+        <td><span class="badge">${u.subscription_status ?? ""}</span></td>
+        <td>${u.plan_type ?? ""}</td>
+        <td>${u.days_left ?? ""}</td>
+        <td>${u.subscription_end_at ?? u.trial_end_at ?? ""}</td>
+        <td>${u.is_creator ? "是" : "否"}</td>
+      </tr>
+    `;
+  });
+
+  html += "</table>";
+
+  document.getElementById("list").innerHTML = html;
 }
 
 loadUsers();
