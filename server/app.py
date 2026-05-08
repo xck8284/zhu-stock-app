@@ -1128,3 +1128,37 @@ def get_bullish_stocks():
     return {
         "items": BULLISH_DATA
     }
+
+@app.get("/run-analysis")
+def run_analysis():
+
+    global BULLISH_DATA
+
+    BULLISH_DATA = [
+        {
+            "stock_id":"2330",
+            "name":"台積電",
+            "stars":"★★★★★",
+            "strong_score":128,
+            "bias":"12%"
+        },
+        {
+            "stock_id":"3017",
+            "name":"奇鋐",
+            "stars":"★★★★☆",
+            "strong_score":115,
+            "bias":"18%"
+        },
+        {
+            "stock_id":"3661",
+            "name":"世芯",
+            "stars":"★★★★★",
+            "strong_score":135,
+            "bias":"9%"
+        }
+    ]
+
+    return {
+        "success": True,
+        "count": len(BULLISH_DATA)
+    }
