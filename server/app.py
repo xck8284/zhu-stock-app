@@ -475,6 +475,26 @@ def auth_verify_register_code(
     }
 
 
+@app.get("/api/bullish")
+def get_bullish():
+    return [
+        {
+            "symbol": "2330",
+            "name": "台積電",
+            "score": 128,
+            "star": "★★★★★",
+            "bias": 12.5
+        },
+        {
+            "symbol": "3017",
+            "name": "奇鋐",
+            "score": 115,
+            "star": "★★★★",
+            "bias": 9.2
+        }
+    ]
+
+
 @app.post("/auth/login")
 def auth_login(
     data: LoginByAccountRequest,
