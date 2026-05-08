@@ -125,15 +125,26 @@ async function login(){
 
     if(data.success){
 
-      document.getElementById("status").innerHTML =
-        "登入成功：" + data.username;
+     if(data.success){
 
-    }else{
+    localStorage.setItem(
+      "token",
+      data.access_token
+    );
 
-      document.getElementById("status").innerHTML =
-        "登入失敗";
+    localStorage.setItem(
+      "username",
+      data.username
+    );
 
-    }
+    window.location.href = "dashboard.html";
+
+}else{
+
+    document.getElementById("status").innerHTML =
+      "登入失敗";
+
+}
 }
 
 </script>
