@@ -4,48 +4,220 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>付款審核</title>
+
 <style>
-body{margin:0;background:#0f172a;color:white;font-family:Arial}
-.header{padding:20px;background:#111827;font-size:28px;font-weight:bold}
-.container{padding:20px}
-.card{background:#1e293b;border-radius:20px;padding:20px;margin-bottom:20px}
-.btn{width:100%;border:none;padding:15px;border-radius:12px;background:#22c55e;color:white;font-size:18px;cursor:pointer;margin-top:15px}
+body{
+  margin:0;
+  background:#0f172a;
+  color:white;
+  font-family:Arial;
+}
+
+.header{
+  padding:20px;
+  background:#111827;
+  font-size:28px;
+  font-weight:bold;
+}
+
+.container{
+  padding:20px;
+}
+
+.card{
+  background:#1e293b;
+  border-radius:20px;
+  padding:20px;
+  overflow:auto;
+}
+
+table{
+  width:100%;
+  border-collapse:collapse;
+  min-width:1000px;
+}
+
+th,td{
+  border-bottom:1px solid #334155;
+  padding:12px;
+  text-align:left;
+}
+
+th{
+  color:#93c5fd;
+}
+
+.btn{
+  border:none;
+  padding:10px 16px;
+  border-radius:10px;
+  cursor:pointer;
+  color:white;
+  margin-right:8px;
+}
+
+.approve{
+  background:#22c55e;
+}
+
+.reject{
+  background:#ef4444;
+}
+
+.back{
+  width:100%;
+  margin-top:20px;
+  padding:15px;
+  border:none;
+  border-radius:12px;
+  background:#22c55e;
+  color:white;
+  font-size:18px;
+  cursor:pointer;
+}
 </style>
 </head>
+
 <body>
 
-<div class="header">付款審核</div>
+<div class="header">
+付款審核
+</div>
 
 <div class="container">
+
   <div class="card">
     <h2>付款回報列表</h2>
-    <div id="list">載入中...</div>
+
+    <div id="content">
+      載入中...
+    </div>
+
   </div>
 
-  <button class="btn" onclick="window.location.href='dashboard.html'">
+  <button class="back"
+    onclick="window.location.href='dashboard.html'">
     返回後台
   </button>
+
 </div>
 
 <script>
-async function loadPayments(){
+
+const API =
+"https://zhu-stock-app.onrender.com";
+
+async function loadReports(){
+
   const token = localStorage.getItem("token");
 
-  const res = await fetch("https://zhu-stock-app.onrender.com/admin/payment-reports", {
-    method: "GET",
-    headers: {
-      "Authorization": "Bearer " + token
+  const res = await fetch(
+    API + "/admin/payment-reports",
+    {
+      headers:{
+        "Authorization":"Bearer " + token
+      }
     }
-  });
+  );
 
   const data = await res.json();
+
   console.log(data);
 
-  document.getElementById("list").innerHTML =
-    "<pre>" + JSON.stringify(data, null, 2) + "</pre>";
+  const items = data.items || [];
+
+  let html = `
+  <table>
+    <tr>
+      <th>ID</th>
+      <th>帳號</th>
+      <th>方案</th>
+      <th>銀行</th>
+      <th>末五碼</th>
+      <th>金額</th>
+      <th>時間</th>
+      <th>操作</th>
+    </tr>
+  `;
+
+  items.forEach(item=>{
+
+    html += `
+    <tr>
+      <td>${item.id}</td>
+      <td>${item.username}</td>
+      <td>${item.plan}</td>
+      <td>${item.bank}</td>
+      <td>${item.last5}</td>
+      <td>${item.amount}</td>
+      <td>${item.created_at}</td>
+
+      <td>
+
+        <button class="btn approve"
+        onclick="approve(${item.id})">
+        通過
+        </button>
+
+        <button class="btn reject"
+        onclick="rejectReport(${item.id})">
+        拒絕
+        </button>
+
+      </td>
+    </tr>
+    `;
+
+  });
+
+  html += "</table>";
+
+  document.getElementById("content").innerHTML = html;
+
 }
 
-loadPayments();
+async function approve(id){
+
+  const token = localStorage.getItem("token");
+
+  await fetch(
+    API + "/admin/approve-payment-report/" + id,
+    {
+      method:"POST",
+      headers:{
+        "Authorization":"Bearer " + token
+      }
+    }
+  );
+
+  alert("已通過");
+
+  loadReports();
+
+}
+
+async function rejectReport(id){
+
+  const token = localStorage.getItem("token");
+
+  await fetch(
+    API + "/admin/reject-payment-report/" + id,
+    {
+      method:"POST",
+      headers:{
+        "Authorization":"Bearer " + token
+      }
+    }
+  );
+
+  alert("已拒絕");
+
+  loadReports();
+
+}
+
+loadReports();
+
 </script>
 
 </body>
