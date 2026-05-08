@@ -1216,3 +1216,50 @@ def get_bearish():
     return {
         "items": BEARISH_DATA
     }
+
+WARRANT_DATA = []
+
+@app.get("/run-warrant-analysis")
+def run_warrant_analysis():
+
+    global WARRANT_DATA
+
+    WARRANT_DATA = [
+        {
+            "stock_id": "2330C",
+            "name": "台積電認購",
+            "broker": "元大",
+            "price": "1.25",
+            "strike": "1180",
+            "premium": "12%"
+        },
+        {
+            "stock_id": "3017C",
+            "name": "奇鋐認購",
+            "broker": "凱基",
+            "price": "0.88",
+            "strike": "820",
+            "premium": "10%"
+        },
+        {
+            "stock_id": "2409P",
+            "name": "友達認售",
+            "broker": "群益",
+            "price": "0.72",
+            "strike": "13.5",
+            "premium": "9%"
+        }
+    ]
+
+    return {
+        "success": True,
+        "count": len(WARRANT_DATA)
+    }
+
+
+@app.get("/warrants")
+def get_warrants():
+
+    return {
+        "items": WARRANT_DATA
+    }
