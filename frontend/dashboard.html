@@ -99,6 +99,33 @@ document.getElementById("welcome").innerHTML =
     "歡迎回來：" + username;
 
 </script>
+<script>
 
+async function runCloudAnalysis(){
+
+    alert("開始雲端分析...");
+
+    try{
+
+        const res = await fetch(
+        "https://zhu-stock-app.onrender.com/run-analysis"
+        );
+
+        const data = await res.json();
+
+        alert(
+            "分析完成\n"+
+            "看多股票數："+data.count
+        );
+
+    }catch(err){
+
+        alert("雲端分析失敗");
+
+    }
+
+}
+
+</script>
 </body>
 </html>
