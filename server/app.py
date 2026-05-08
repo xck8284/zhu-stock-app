@@ -1107,7 +1107,4 @@ def get_bullish_stocks():
         ]
     }
 
-        return {
-            "error": str(e),
-            "items":[]
-        }
+ 
