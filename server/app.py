@@ -982,3 +982,106 @@ def license_check_legacy(
         "subscription_end_at": user.subscription_end_at,
         "days_left": lic["days_left"],
     }
+
+# =========================
+# 管理員取得付款回報列表
+# =========================
+@app.get("/admin/payment-reports")
+def admin_payment_reports(
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    user = get_current_user(authorization, db)
+
+    if not user.is_creator:
+        raise HTTPException(status_code=403, detail="沒有權限")
+
+    reports = (
+        db.query(PaymentReport)
+        .order_by(PaymentReport.created_at.desc())
+        .all()
+    )
+
+    result = []
+
+    for r in reports:
+        result.append({
+            "id": r.id,
+            "username": r.username,
+            "email": r.email,
+            "plan_type": r.plan_type,
+            "amount": r.amount,
+            "transfer_last5": r.transfer_last5,
+            "transfer_time": r.transfer_time,
+            "payer_name": r.payer_name,
+            "note": r.note,
+            "status": r.status,
+            "created_at": r.created_at,
+        })
+
+    return {
+        "success": True,
+        "reports": result
+    }
+
+
+# =========================
+# 管理員審核付款
+# =========================
+@app.post("/admin/approve-payment/{report_id}")
+def approve_payment(
+    report_id: int,
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    admin = get_current_user(authorization, db)
+
+    if not admin.is_creator:
+        raise HTTPException(status_code=403, detail="沒有權限")
+
+    report = (
+        db.query(PaymentReport)
+        .filter(PaymentReport.id == report_id)
+        .first()
+    )
+
+    if not report:
+        raise HTTPException(status_code=404, detail="找不到付款資料")
+
+    report.status = "approved"
+
+    user = (
+        db.query(User)
+        .filter(User.id == report.user_id)
+        .first()
+    )
+
+    if user:
+
+        now = datetime.utcnow()
+
+        if report.plan_type == "month":
+            days = 30
+
+        elif report.plan_type == "half_year":
+            days = 180
+
+        elif report.plan_type == "year":
+            days = 365
+
+        else:
+            days = 30
+
+        if user.vip_expire_at and user.vip_expire_at > now:
+            user.vip_expire_at = user.vip_expire_at + timedelta(days=days)
+        else:
+            user.vip_expire_at = now + timedelta(days=days)
+
+        user.is_vip = True
+
+    db.commit()
+
+    return {
+        "success": True,
+        "message": "已完成審核與開通"
+    }
