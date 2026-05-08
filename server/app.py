@@ -1174,3 +1174,20 @@ def run_analysis():
         "success": True,
         "count": len(BULLISH_DATA)
     }
+
+BULLISH_DATA = [
+    {
+        "stock_id":"2330",
+        "name":"台積電",
+        "stars":"★★★★★",
+        "strong_score":128,
+        "bias":"12%"
+    }
+]
+
+@app.get("/bullish")
+def get_bullish():
+
+    return {
+        "items": BULLISH_DATA
+    }
