@@ -1132,41 +1132,31 @@ def get_bullish_stocks():
 from analysis import run_analysis
 
 @app.get("/run-analysis")
-def trigger_analysis():
-
-    global BULLISH_DATA
-
-    BULLISH_DATA = run_analysis()
-
-    return {
-        "success": True,
-        "count": len(BULLISH_DATA)
-    }
 def run_analysis():
 
     global BULLISH_DATA
 
     BULLISH_DATA = [
         {
-            "stock_id":"2330",
-            "name":"台積電",
-            "stars":"★★★★★",
-            "strong_score":128,
-            "bias":"12%"
+            "stock_id": "2330",
+            "name": "台積電",
+            "stars": "★★★★★",
+            "strong_score": 128,
+            "bias": "12%"
         },
         {
-            "stock_id":"3017",
-            "name":"奇鋐",
-            "stars":"★★★★☆",
-            "strong_score":115,
-            "bias":"18%"
+            "stock_id": "3017",
+            "name": "奇鋐",
+            "stars": "★★★★☆",
+            "strong_score": 115,
+            "bias": "18%"
         },
         {
-            "stock_id":"3661",
-            "name":"世芯",
-            "stars":"★★★★★",
-            "strong_score":135,
-            "bias":"9%"
+            "stock_id": "3661",
+            "name": "世芯",
+            "stars": "★★★★★",
+            "strong_score": 135,
+            "bias": "9%"
         }
     ]
 
@@ -1175,15 +1165,6 @@ def run_analysis():
         "count": len(BULLISH_DATA)
     }
 
-BULLISH_DATA = [
-    {
-        "stock_id":"2330",
-        "name":"台積電",
-        "stars":"★★★★★",
-        "strong_score":128,
-        "bias":"12%"
-    }
-]
 
 @app.get("/bullish")
 def get_bullish():
