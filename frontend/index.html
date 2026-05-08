@@ -150,10 +150,10 @@ async function login(){
                 data.access_token
             );
 
-            localStorage.setItem(
-                "username",
-                data.username
-            );
+           localStorage.setItem(
+    "username",
+    data.username || data.user?.username || data.account || account
+);
 
             document.getElementById("status").innerHTML =
                 "登入成功：" + data.username;
