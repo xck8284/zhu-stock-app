@@ -1129,7 +1129,19 @@ def get_bullish_stocks():
         "items": BULLISH_DATA
     }
 
+from analysis import run_analysis
+
 @app.get("/run-analysis")
+def trigger_analysis():
+
+    global BULLISH_DATA
+
+    BULLISH_DATA = run_analysis()
+
+    return {
+        "success": True,
+        "count": len(BULLISH_DATA)
+    }
 def run_analysis():
 
     global BULLISH_DATA
