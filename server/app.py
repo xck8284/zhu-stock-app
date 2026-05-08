@@ -1088,41 +1088,24 @@ def approve_payment(
 
 @app.get("/stocks/bullish")
 def get_bullish_stocks():
-
-    import pandas as pd
-    import os
-
-    file_path = r"C:\Users\user\Desktop\zhustock\TWSE_ALL.xlsx"
-
-    if not os.path.exists(file_path):
-        return {
-            "items":[]
-        }
-
-    try:
-
-        df = pd.read_excel(
-            file_path,
-            sheet_name="SELECT"
-        )
-
-        items = []
-
-        for _, row in df.iterrows():
-
-            items.append({
-                "stock_id": str(row.get("股票代號","")),
-                "name": str(row.get("股票名稱","")),
-                "stars": str(row.get("星等","")),
-                "strong_score": row.get("StrongScore",""),
-                "bias": str(row.get("乖離率(%)","")) + "%"
-            })
-
-        return {
-            "items": items
-        }
-
-    except Exception as e:
+    return {
+        "items":[
+            {
+                "stock_id":"2330",
+                "name":"台積電",
+                "stars":"★★★★★",
+                "strong_score":128,
+                "bias":"12%"
+            },
+            {
+                "stock_id":"3017",
+                "name":"奇鋐",
+                "stars":"★★★★☆",
+                "strong_score":115,
+                "bias":"18%"
+            }
+        ]
+    }
 
         return {
             "error": str(e),
