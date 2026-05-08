@@ -1085,3 +1085,29 @@ def approve_payment(
         "success": True,
         "message": "已完成審核與開通"
     }
+
+@app.get("/stocks/bullish")
+def get_bullish_stocks():
+
+    data = [
+        {
+            "stock_id": "2330",
+            "name": "台積電",
+            "stars": "★★★★★",
+            "strong_score": 128,
+            "bias": "12%"
+        },
+        {
+            "stock_id": "3017",
+            "name": "奇鋐",
+            "stars": "★★★★☆",
+            "strong_score": 115,
+            "bias": "18%"
+        }
+    ]
+
+    return {
+        "success": True,
+        "count": len(data),
+        "items": data
+    }
