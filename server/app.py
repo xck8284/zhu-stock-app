@@ -1263,3 +1263,47 @@ def get_warrants():
     return {
         "items": WARRANT_DATA
     }
+
+HOLDING_DATA = []
+
+@app.get("/run-holding-analysis")
+def run_holding_analysis():
+
+    global HOLDING_DATA
+
+    HOLDING_DATA = [
+        {
+            "stock_id": "2330",
+            "name": "台積電",
+            "price": "1125",
+            "profit": "+12%",
+            "stars": "★★★★★"
+        },
+        {
+            "stock_id": "3017",
+            "name": "奇鋐",
+            "price": "785",
+            "profit": "+8%",
+            "stars": "★★★★☆"
+        },
+        {
+            "stock_id": "3661",
+            "name": "世芯",
+            "price": "2520",
+            "profit": "+15%",
+            "stars": "★★★★★"
+        }
+    ]
+
+    return {
+        "success": True,
+        "count": len(HOLDING_DATA)
+    }
+
+
+@app.get("/holding")
+def get_holding():
+
+    return {
+        "items": HOLDING_DATA
+    }
