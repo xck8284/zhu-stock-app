@@ -1,68 +1,68 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
+
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
 <title>看多選股池</title>
 
 <style>
+
 body{
-  margin:0;
-  background:#0f172a;
-  color:white;
-  font-family:Arial;
+    margin:0;
+    background:#0f172a;
+    color:white;
+    font-family:Arial;
 }
 
 .header{
-  padding:20px;
-  background:#111827;
-  font-size:28px;
-  font-weight:bold;
+    padding:20px;
+    background:#111827;
+    font-size:32px;
+    font-weight:bold;
 }
 
 .container{
-  padding:20px;
+    padding:20px;
 }
 
 .card{
-  background:#1e293b;
-  border-radius:20px;
-  padding:20px;
-  overflow:auto;
+    background:#1e293b;
+    border-radius:20px;
+    padding:20px;
+    overflow:auto;
 }
 
 table{
-  width:100%;
-  border-collapse:collapse;
+    width:100%;
+    border-collapse:collapse;
 }
 
 th,td{
-  border-bottom:1px solid #334155;
-  padding:12px;
-  text-align:left;
+    border-bottom:1px solid #334155;
+    padding:12px;
+    text-align:left;
 }
 
 th{
-  color:#93c5fd;
+    color:#93c5fd;
 }
 
 .back{
-  width:100%;
-  margin-top:20px;
-  padding:15px;
-  border:none;
-  border-radius:12px;
-  background:#22c55e;
-  color:white;
-  font-size:18px;
-  cursor:pointer;
+    width:100%;
+    margin-top:20px;
+    padding:15px;
+    border:none;
+    border-radius:12px;
+    background:#22c55e;
+    color:white;
+    font-size:18px;
+    cursor:pointer;
 }
 
-.loading{
-  padding:20px;
-  color:#cbd5e1;
-}
 </style>
+
 </head>
 
 <body>
@@ -73,109 +73,66 @@ th{
 
 <div class="container">
 
-  <div class="card">
+<div class="card">
 
-    <table id="table">
+<table id="stockTable">
 
-      <tr>
-        <th>股票代號</th>
-        <th>股票名稱</th>
-        <th>星等</th>
-        <th>StrongScore</th>
-        <th>乖離率%</th>
-      </tr>
+<tr>
+<th>股票代號</th>
+<th>股票名稱</th>
+<th>星等</th>
+<th>StrongScore</th>
+<th>乖離率%</th>
+</tr>
 
-      <tr>
-        <td colspan="5" class="loading">
-          資料載入中...
-        </td>
-      </tr>
+</table>
 
-    </table>
+</div>
 
-  </div>
-
-  <button class="back"
-  onclick="window.location.href='dashboard.html'">
-    返回後台
-  </button>
+<button class="back"
+onclick="window.location.href='dashboard.html'">
+返回後台
+</button>
 
 </div>
 
 <script>
 
-const API =
-"https://zhu-stock-app.onrender.com";
+async function loadBullish(){
 
-async function loadStocks(){
+    try{
 
-  try{
+        const response = await fetch(
+        "https://zhu-stock-app.onrender.com/bullish"
+        );
 
-    const res = await fetch(
-      API + "/stocks/bullish"
-    );
+        const data = await response.json();
 
-    const data = await res.json();
+        const table = document.getElementById("stockTable");
 
-    const items = data.items || [];
+        data.items.forEach(stock=>{
 
-    let html = `
-    <tr>
-      <th>股票代號</th>
-      <th>股票名稱</th>
-      <th>星等</th>
-      <th>StrongScore</th>
-      <th>乖離率%</th>
-    </tr>
-    `;
+            table.innerHTML += `
+            <tr>
+                <td>${stock.stock_id}</td>
+                <td>${stock.name}</td>
+                <td>${stock.stars}</td>
+                <td>${stock.strong_score}</td>
+                <td>${stock.bias}</td>
+            </tr>
+            `;
+        });
 
-    if(items.length === 0){
+    }catch(error){
 
-      html += `
-      <tr>
-        <td colspan="5">
-          目前沒有資料
-        </td>
-      </tr>
-      `;
-
-    }else{
-
-      items.forEach(stock=>{
-
-        html += `
-        <tr>
-          <td>${stock.stock_id || "-"}</td>
-          <td>${stock.name || "-"}</td>
-          <td>${stock.stars || "-"}</td>
-          <td>${stock.strong_score || "-"}</td>
-          <td>${stock.bias || "-"}</td>
-        </tr>
-        `;
-
-      });
+        document.querySelector(".card").innerHTML =
+        "API連線失敗";
 
     }
 
-    document.getElementById("table").innerHTML = html;
-
-  }catch(err){
-
-    document.getElementById("table").innerHTML = `
-      <tr>
-        <td colspan="5">
-          API連線失敗
-        </td>
-      </tr>
-    `;
-
-    console.error(err);
-
-  }
-
 }
 
-loadStocks();
+loadBullish();
 
 </script>
 
