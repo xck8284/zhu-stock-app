@@ -772,8 +772,8 @@ def admin_set_plan(
     if not user:
         raise HTTPException(status_code=404, detail="找不到使用者")
 
-    if data.plan_type not in ("monthly", "quarterly", "yearly"):
-        raise HTTPException(status_code=400, detail="方案類型錯誤")
+  if data.plan_type not in ("monthly", "quarterly", "yearly", "trial", "free_grant", "none"):
+    raise HTTPException(status_code=400, detail="方案類型錯誤")
 
     start = now_utc()
     end = start + timedelta(days=PLAN_DAYS[data.plan_type])
