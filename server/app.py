@@ -40,10 +40,12 @@ app.add_middleware(
 
 
 PLAN_DAYS = {
-    "trial": settings.TRIAL_DAYS,
     "monthly": 30,
     "quarterly": 90,
     "yearly": 365,
+    "trial": 30,
+    "free_grant": 30,
+    "none": 0
 }
 
 
