@@ -1,5 +1,8 @@
 import certifi
 import requests
+import os
+import smtplib
+from email.mime.text import MIMEText
 
 from datetime import datetime, timedelta, timezone
 import random
@@ -363,6 +366,124 @@ def ensure_db_columns():
 ensure_db_columns()
 with SessionLocal() as db:
     ensure_default_creator(db)
+
+
+# =========================
+# 後台 Email API：供桌面版 APP 測試信、到期提醒、付款/註冊通知使用
+# 同時支援 Render 既有 SMTP_* 與前台新版 ZHU_SMTP_* 變數
+# =========================
+def _env_first(*names, default=""):
+    for name in names:
+        val = os.getenv(name)
+        if val is not None and str(val).strip() != "":
+            return str(val).strip()
+    return default
+
+
+def send_backend_smtp_email(to_email: str, subject: str, body: str):
+    to_email = (to_email or "").strip()
+    subject = (subject or "ZHU STOCK 通知").strip()
+    body = body or ""
+
+    if not to_email:
+        raise HTTPException(status_code=400, detail="缺少收件人 Email")
+
+    smtp_host = _env_first("SMTP_HOST", "ZHU_SMTP_HOST")
+    smtp_port = int(_env_first("SMTP_PORT", "ZHU_SMTP_PORT", default="587"))
+    smtp_user = _env_first("SMTP_USER", "ZHU_SMTP_USER")
+    smtp_password = _env_first("SMTP_PASSWORD", "ZHU_SMTP_PASSWORD")
+    smtp_from = _env_first("SMTP_FROM", "ZHU_SMTP_FROM", default=smtp_user)
+    use_tls = _env_first("SMTP_USE_TLS", "ZHU_SMTP_USE_TLS", default="true").lower() not in ("0", "false", "no", "off")
+
+    if not smtp_host or not smtp_user or not smtp_password or not smtp_from:
+        raise HTTPException(
+            status_code=500,
+            detail="SMTP 環境變數未完整設定，請確認 SMTP_HOST、SMTP_PORT、SMTP_USER、SMTP_PASSWORD、SMTP_FROM"
+        )
+
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = smtp_from
+    msg["To"] = to_email
+
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+            if use_tls:
+                server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(smtp_from, [to_email], msg.as_string())
+        return True
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"SMTP 寄信失敗：{str(e)}")
+
+
+def _extract_email_payload(data: dict):
+    to_email = (
+        data.get("to")
+        or data.get("email")
+        or data.get("to_email")
+        or data.get("recipient")
+        or data.get("receiver")
+        or ""
+    )
+    subject = data.get("subject") or data.get("title") or "ZHU STOCK 通知"
+    body = data.get("body") or data.get("message") or data.get("content") or ""
+    return str(to_email).strip(), str(subject).strip(), str(body)
+
+
+def _require_creator_if_token(authorization: Optional[str], db: Session):
+    # 桌面版管理員通常會帶 Bearer token；有 token 就驗證創作者權限。
+    if authorization:
+        return get_current_creator(authorization, db)
+    return None
+
+
+@app.post("/admin/send-email")
+def admin_send_email_api(
+    data: dict,
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    _require_creator_if_token(authorization, db)
+    to_email, subject, body = _extract_email_payload(data)
+    send_backend_smtp_email(to_email, subject, body)
+    return {"success": True, "message": "Email 已送出", "to": to_email}
+
+
+@app.post("/admin/notify-email")
+def admin_notify_email_api(
+    data: dict,
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    _require_creator_if_token(authorization, db)
+    to_email, subject, body = _extract_email_payload(data)
+    send_backend_smtp_email(to_email, subject, body)
+    return {"success": True, "message": "通知信已送出", "to": to_email}
+
+
+@app.post("/api/admin/notify-email")
+def api_admin_notify_email_api(
+    data: dict,
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    _require_creator_if_token(authorization, db)
+    to_email, subject, body = _extract_email_payload(data)
+    send_backend_smtp_email(to_email, subject, body)
+    return {"success": True, "message": "通知信已送出", "to": to_email}
+
+
+@app.post("/notify-email")
+def notify_email_api(
+    data: dict,
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    _require_creator_if_token(authorization, db)
+    to_email, subject, body = _extract_email_payload(data)
+    send_backend_smtp_email(to_email, subject, body)
+    return {"success": True, "message": "通知信已送出", "to": to_email}
 
 
 @app.get("/")
