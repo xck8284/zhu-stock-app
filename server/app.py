@@ -1492,7 +1492,7 @@ async def admin_notify_email(request: Request):
     if not to_email:
         raise HTTPException(status_code=400, detail="缺少收件人 Email")
 
-    try:
+try:
     zhu_send_smtp_email(to_email, subject, body)
 except Exception as e:
     print(f"[EMAIL_ERROR] {type(e).__name__}: {e}", flush=True)
