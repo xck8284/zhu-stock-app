@@ -407,14 +407,23 @@ def send_backend_smtp_email(to_email: str, subject: str, body: str):
     msg["To"] = to_email
 
     try:
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
-            if use_tls:
-                server.starttls()
-            server.login(smtp_user, smtp_password)
-            server.sendmail(smtp_from, [to_email], msg.as_string())
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30) as server:
+                server.login(smtp_user, smtp_password)
+                server.sendmail(smtp_from, [to_email], msg.as_string())
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+                if use_tls:
+                    server.starttls()
+                server.login(smtp_user, smtp_password)
+                server.sendmail(smtp_from, [to_email], msg.as_string())
+
+        print(f"[EMAIL_OK] to={to_email} subject={subject}", flush=True)
         return True
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"SMTP 寄信失敗：{str(e)}")
+        print(f"[EMAIL_ERROR] {type(e).__name__}: {e}", flush=True)
+        raise HTTPException(status_code=500, detail=f"SMTP寄信失敗：{type(e).__name__}: {e}")
 
 
 def _extract_email_payload(data: dict):
