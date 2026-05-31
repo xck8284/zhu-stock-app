@@ -41,7 +41,7 @@ TREND_MEMORY_FILE = os.path.join(OUTPUT_DIR, "trend_memory.pkl")
 HOLDINGS_FILE = os.path.join(OUTPUT_DIR, "holdings.json")
 AUTH_SESSION_FILE = os.path.join(OUTPUT_DIR, "auth_session.json")
 DEVICE_INFO_FILE = os.path.join(OUTPUT_DIR, "device_info.json")
-AUTH_SERVER_BASE = "http://127.0.0.1:8000"
+AUTH_SERVER_BASE = "https://zhu-stock-app.onrender.com"
 
 PAYMENT_BANKS = [
     "元大銀行 / 806 / 20342720080940",
