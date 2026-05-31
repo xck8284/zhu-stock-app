@@ -381,6 +381,12 @@ def _env_first(*names, default=""):
 
 
 def send_backend_smtp_email(to_email: str, subject: str, body: str):
+    """
+    Render Free 會封鎖 SMTP 25/465/587，所以後台通知信改回 Email API（Brevo）。
+    需要 Render Environment：
+    - BREVO_API_KEY
+    - BREVO_FROM_EMAIL
+    """
     to_email = (to_email or "").strip()
     subject = (subject or "ZHU STOCK 通知").strip()
     body = body or ""
@@ -388,43 +394,45 @@ def send_backend_smtp_email(to_email: str, subject: str, body: str):
     if not to_email:
         raise HTTPException(status_code=400, detail="缺少收件人 Email")
 
-    smtp_host = _env_first("SMTP_HOST", "ZHU_SMTP_HOST")
-    smtp_port = int(_env_first("SMTP_PORT", "ZHU_SMTP_PORT", default="587"))
-    smtp_user = _env_first("SMTP_USER", "ZHU_SMTP_USER")
-    smtp_password = _env_first("SMTP_PASSWORD", "ZHU_SMTP_PASSWORD")
-    smtp_from = _env_first("SMTP_FROM", "ZHU_SMTP_FROM", default=smtp_user)
-    use_tls = _env_first("SMTP_USE_TLS", "ZHU_SMTP_USE_TLS", default="true").lower() not in ("0", "false", "no", "off")
+    if not settings.BREVO_API_KEY:
+        raise HTTPException(status_code=500, detail="BREVO_API_KEY 未設定，請到 Render Environment 設定")
 
-    if not smtp_host or not smtp_user or not smtp_password or not smtp_from:
-        raise HTTPException(
-            status_code=500,
-            detail="SMTP 環境變數未完整設定，請確認 SMTP_HOST、SMTP_PORT、SMTP_USER、SMTP_PASSWORD、SMTP_FROM"
-        )
+    if not settings.BREVO_FROM_EMAIL:
+        raise HTTPException(status_code=500, detail="BREVO_FROM_EMAIL 未設定，請到 Render Environment 設定")
 
-    msg = MIMEText(body, "plain", "utf-8")
-    msg["Subject"] = subject
-    msg["From"] = smtp_from
-    msg["To"] = to_email
+    configuration = sib_api_v3_sdk.Configuration()
+    configuration.api_key["api-key"] = settings.BREVO_API_KEY
+
+    api_instance = sib_api_v3_sdk.TransactionalEmailsApi(
+        sib_api_v3_sdk.ApiClient(configuration)
+    )
+
+    html_body = str(body).replace("\n", "<br>")
+
+    send_smtp_email = sib_api_v3_sdk.SendSmtpEmail(
+        sender={
+            "name": "ZHU STOCK",
+            "email": settings.BREVO_FROM_EMAIL,
+        },
+        to=[
+            {
+                "email": to_email,
+            }
+        ],
+        subject=subject,
+        html_content=html_body,
+    )
 
     try:
-        if smtp_port == 465:
-            with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30) as server:
-                server.login(smtp_user, smtp_password)
-                server.sendmail(smtp_from, [to_email], msg.as_string())
-        else:
-            with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
-                if use_tls:
-                    server.starttls()
-                server.login(smtp_user, smtp_password)
-                server.sendmail(smtp_from, [to_email], msg.as_string())
-
-        print(f"[EMAIL_OK] to={to_email} subject={subject}", flush=True)
+        api_instance.send_transac_email(send_smtp_email)
+        print(f"[EMAIL_OK] Brevo API 已寄出 to={to_email} subject={subject}", flush=True)
         return True
-
+    except ApiException as e:
+        print(f"[EMAIL_ERROR] Brevo ApiException: {e}", flush=True)
+        raise HTTPException(status_code=500, detail=f"Brevo API 寄信失敗：{str(e)}")
     except Exception as e:
         print(f"[EMAIL_ERROR] {type(e).__name__}: {e}", flush=True)
-        raise HTTPException(status_code=500, detail=f"SMTP寄信失敗：{type(e).__name__}: {e}")
-
+        raise HTTPException(status_code=500, detail=f"Brevo API 寄信失敗：{type(e).__name__}: {e}")
 
 def _extract_email_payload(data: dict):
     to_email = (
