@@ -992,11 +992,7 @@ def admin_deactivate_user(
     return {"success": True, "message": "帳號狀態已更新", "account": data.account, "is_active": data.is_active}
 
 
-@app.get("/admin/payment-reports")
-def admin_payment_reports(
-    authorization: Optional[str] = Header(default=None),
-    db: Session = Depends(get_db),
-):
+
     _ = get_current_creator(authorization, db)
     rows = db.query(PaymentReport).order_by(PaymentReport.created_at.desc()).all()
     items = []
