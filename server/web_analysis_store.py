@@ -34,6 +34,10 @@ def save_web_analysis_result(result: dict) -> dict:
                 "strategy": result.get("strategy") or {},
                 "job_status": result.get("job_status", "idle"),
                 "job_error": result.get("job_error", ""),
+                "job_started_at": result.get("job_started_at", ""),
+                "job_progress": result.get("job_progress", 0),
+                "job_message": result.get("job_message", ""),
+                "job_elapsed_sec": result.get("job_elapsed_sec", 0),
             },
         }
 
@@ -85,6 +89,10 @@ def load_web_analysis_result() -> dict | None:
             "strategy": meta.get("strategy") or {},
             "job_status": meta.get("job_status", "idle"),
             "job_error": meta.get("job_error", ""),
+            "job_started_at": meta.get("job_started_at", ""),
+            "job_progress": meta.get("job_progress", 0),
+            "job_message": meta.get("job_message", ""),
+            "job_elapsed_sec": meta.get("job_elapsed_sec", 0),
         }
     except Exception:
         return None

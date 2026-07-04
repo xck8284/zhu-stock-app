@@ -38,16 +38,29 @@ logger = logging.getLogger("zhu.app")
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    from analysis_scheduler import maybe_refresh_on_startup, start_analysis_scheduler, stop_analysis_scheduler
+    from analysis_scheduler import (
+        get_running_progress,
+        maybe_refresh_on_startup,
+        recover_stale_running_job,
+        register_analysis_complete_callback,
+        start_analysis_scheduler,
+        stop_analysis_scheduler,
+    )
     from web_analysis_store import load_web_analysis_result
+
+    register_analysis_complete_callback(_apply_web_analysis_result)
 
     cached = load_web_analysis_result()
     if cached:
+        cached = recover_stale_running_job(cached)
+        if cached.get("job_status") == "running":
+            cached = get_running_progress(cached)
         _apply_web_analysis_result(cached)
         logger.info(
-            "loaded web analysis cache settle=%s updated=%s",
+            "loaded web analysis cache settle=%s updated=%s status=%s",
             cached.get("settle_date"),
             cached.get("updated_at"),
+            cached.get("job_status"),
         )
 
     start_analysis_scheduler()
@@ -1371,7 +1384,7 @@ def get_bullish_stocks():
         "items": BULLISH_DATA if BULLISH_DATA else FALLBACK_BULLISH
     }
 
-from analysis_scheduler import run_analysis_and_persist, run_analysis_in_background
+from analysis_scheduler import run_analysis_in_background
 
 
 def _apply_web_analysis_result(result):
@@ -1390,9 +1403,26 @@ def _apply_web_analysis_result(result):
         "warrant_count": len(WEB_WARRANT_DATA),
         "job_status": result.get("job_status", "idle"),
         "job_error": result.get("job_error", ""),
+        "job_started_at": result.get("job_started_at", ""),
+        "job_progress": result.get("job_progress", 0),
+        "job_message": result.get("job_message", ""),
+        "job_elapsed_sec": result.get("job_elapsed_sec", 0),
         "auto_refresh": "weekday 16:05 Asia/Taipei",
     }
     return WEB_ANALYSIS_META
+
+
+def _reload_web_analysis_from_db():
+    from analysis_scheduler import get_running_progress, recover_stale_running_job
+    from web_analysis_store import load_web_analysis_result
+
+    cached = load_web_analysis_result()
+    if not cached:
+        return WEB_ANALYSIS_META
+    cached = recover_stale_running_job(cached)
+    if cached.get("job_status") == "running":
+        cached = get_running_progress(cached)
+    return _apply_web_analysis_result(cached)
 
 
 def get_effective_cron_secret() -> str:
@@ -1413,9 +1443,10 @@ def _verify_cron_secret(x_cron_secret: Optional[str]) -> None:
 @app.get("/web/public/status")
 def web_public_status():
     """公開狀態（不含個股清單），供監控與前端顯示更新時間。"""
+    meta = _reload_web_analysis_from_db()
     return {
         "success": True,
-        **WEB_ANALYSIS_META,
+        **meta,
         "has_data": bool(WEB_BULLISH_DATA or WEB_BEARISH_DATA or WEB_WARRANT_DATA),
         "cron_ready": bool(get_effective_cron_secret()),
     }
@@ -1427,9 +1458,10 @@ def web_analysis_status(
     db: Session = Depends(get_db),
 ):
     _ = get_current_user(authorization, db)
+    meta = _reload_web_analysis_from_db()
     return {
         "success": True,
-        **WEB_ANALYSIS_META,
+        **meta,
         "has_data": bool(WEB_BULLISH_DATA or WEB_BEARISH_DATA or WEB_WARRANT_DATA),
     }
 
@@ -1454,30 +1486,39 @@ def web_cron_daily_analysis(
 def web_run_analysis(
     authorization: Optional[str] = Header(default=None),
     db: Session = Depends(get_db),
+    force: bool = False,
 ):
     user = get_current_user(authorization, db)
 
     if not user.is_active:
         raise HTTPException(status_code=403, detail="帳號已停用")
 
+    _reload_web_analysis_from_db()
+
+    if force and WEB_ANALYSIS_META.get("job_status") == "running":
+        from analysis_scheduler import _set_job_meta
+        from web_analysis_store import load_web_analysis_result, save_web_analysis_result
+
+        cached = load_web_analysis_result() or {}
+        cached = _set_job_meta(cached, "failed", "使用者強制重新啟動")
+        save_web_analysis_result(cached)
+        _apply_web_analysis_result(cached)
+
     if WEB_ANALYSIS_META.get("job_status") == "running":
         return {
             "success": True,
-            "message": "分析進行中，請稍後再查看",
+            "message": WEB_ANALYSIS_META.get("job_message") or "分析進行中，請稍候",
             **WEB_ANALYSIS_META,
         }
 
-    try:
-        result = run_analysis_and_persist(trigger="manual")
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"分析失敗：{exc}") from exc
-
-    meta = _apply_web_analysis_result(result)
+    started = run_analysis_in_background(trigger="manual")
+    _reload_web_analysis_from_db()
 
     return {
         "success": True,
-        "message": "網頁版分析完成",
-        **meta,
+        "started": started,
+        "message": "已開始背景分析，請稍候" if started else "分析已在進行中",
+        **WEB_ANALYSIS_META,
     }
 
 

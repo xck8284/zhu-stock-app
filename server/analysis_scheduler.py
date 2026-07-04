@@ -18,6 +18,8 @@ from web_analysis_store import load_web_analysis_result, save_web_analysis_resul
 logger = logging.getLogger("zhu.analysis")
 TW = ZoneInfo("Asia/Taipei")
 
+STALE_RUNNING_MINUTES = 12
+
 _scheduler: BackgroundScheduler | None = None
 _job_lock = threading.Lock()
 _job_running = False
@@ -54,16 +56,108 @@ def _set_job_meta(result: dict, status: str, error: str = "") -> dict:
     result = dict(result or {})
     result["job_status"] = status
     result["job_error"] = error
+    if status == "running":
+        result["job_started_at"] = tw_now().strftime("%Y-%m-%d %H:%M:%S")
+        result["job_progress"] = 5
+        result["job_message"] = "正在抓取台股歷史資料…"
+    elif status == "idle":
+        result["job_progress"] = 100
+        result["job_message"] = "分析完成"
+    elif status == "failed":
+        result["job_progress"] = 0
+        if not result.get("job_message"):
+            result["job_message"] = error or "分析失敗"
     return result
+
+
+def _parse_job_started_at(meta: dict):
+    raw = str(meta.get("job_started_at") or "").strip()
+    if not raw:
+        return None
+    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"]:
+        try:
+            return datetime.strptime(raw, fmt).replace(tzinfo=TW)
+        except Exception:
+            continue
+    return None
+
+
+def recover_stale_running_job(meta: dict | None = None) -> dict:
+    """若 running 超過時限，視為 Render 逾時中斷並重置，避免永遠卡住。"""
+    meta = dict(meta or load_web_analysis_result() or {})
+    if meta.get("job_status") != "running":
+        return meta
+
+    started = _parse_job_started_at(meta)
+    if started is None:
+        meta = _set_job_meta(meta, "failed", "分析中斷（可重新啟動）")
+        save_web_analysis_result(meta)
+        return meta
+
+    elapsed_min = (tw_now() - started).total_seconds() / 60.0
+    meta["job_elapsed_sec"] = int(elapsed_min * 60)
+    if elapsed_min >= STALE_RUNNING_MINUTES:
+        meta = _set_job_meta(
+            meta,
+            "failed",
+            f"分析逾時（>{STALE_RUNNING_MINUTES} 分鐘），請重新啟動",
+        )
+        save_web_analysis_result(meta)
+    return meta
+
+
+def get_running_progress(meta: dict | None = None) -> dict:
+    meta = dict(meta or load_web_analysis_result() or {})
+    if meta.get("job_status") != "running":
+        return meta
+
+    started = _parse_job_started_at(meta)
+    elapsed_sec = 0
+    if started is not None:
+        elapsed_sec = max(0, int((tw_now() - started).total_seconds()))
+
+    # 前端進度條用：依已耗時估算（完整分析約 5～10 分鐘）
+    estimated_total = 8 * 60
+    progress = min(95, max(5, int(elapsed_sec / estimated_total * 100)))
+    if elapsed_sec < 60:
+        message = "正在抓取台股歷史資料…"
+    elif elapsed_sec < 180:
+        message = "正在計算週K 與趨勢線…"
+    elif elapsed_sec < 360:
+        message = "正在套用策略篩選與權證…"
+    else:
+        message = "即將完成，請稍候…"
+
+    meta["job_elapsed_sec"] = elapsed_sec
+    meta["job_progress"] = progress
+    meta["job_message"] = message
+    return meta
+
+
+_on_complete_callbacks = []
+
+
+def register_analysis_complete_callback(callback) -> None:
+    if callback not in _on_complete_callbacks:
+        _on_complete_callbacks.append(callback)
+
+
+def _notify_analysis_complete(result: dict) -> None:
+    for callback in _on_complete_callbacks:
+        try:
+            callback(result)
+        except Exception:
+            logger.exception("[analysis] callback failed")
 
 
 def run_analysis_and_persist(trigger: str = "manual") -> dict:
     global _job_running
 
+    recover_stale_running_job()
+
     with _job_lock:
         if _job_running:
-            cached = load_web_analysis_result() or {}
-            cached["job_status"] = "running"
+            cached = get_running_progress(load_web_analysis_result() or {})
             cached["message"] = "分析進行中，請稍後再試"
             return cached
         _job_running = True
@@ -72,10 +166,12 @@ def run_analysis_and_persist(trigger: str = "manual") -> dict:
         logger.info("[analysis] start trigger=%s", trigger)
         running_meta = _set_job_meta(load_web_analysis_result() or {}, "running")
         save_web_analysis_result(running_meta)
+        _notify_analysis_complete(running_meta)
 
         result = run_analysis()
         result = _set_job_meta(result, "idle")
         save_web_analysis_result(result)
+        _notify_analysis_complete(result)
         logger.info(
             "[analysis] done trigger=%s bullish=%s bearish=%s warrants=%s settle=%s",
             trigger,
@@ -89,6 +185,7 @@ def run_analysis_and_persist(trigger: str = "manual") -> dict:
         logger.exception("[analysis] failed trigger=%s", trigger)
         failed = _set_job_meta(load_web_analysis_result() or {}, "failed", str(exc))
         save_web_analysis_result(failed)
+        _notify_analysis_complete(failed)
         raise
     finally:
         with _job_lock:
@@ -96,6 +193,7 @@ def run_analysis_and_persist(trigger: str = "manual") -> dict:
 
 
 def run_analysis_in_background(trigger: str = "auto") -> bool:
+    recover_stale_running_job()
     if _job_running:
         return False
 
