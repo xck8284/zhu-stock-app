@@ -733,6 +733,7 @@ def auth_login(
             "username": user.username,
             "email": user.email,
             "phone": user.phone,
+            "is_creator": user.is_creator,
         },
         "subscription_status": lic["subscription_status"],
         "plan_type": lic["plan_type"],
@@ -860,6 +861,7 @@ def license_status(
         "subscription_end_at": user.subscription_end_at,
         "account": user.username,
         "email": user.email,
+        "is_creator": user.is_creator,
         "device_id": getattr(user, "device_id", None),
     }
 
