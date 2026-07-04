@@ -9,25 +9,26 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 import random
 import re
+import uuid
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, func
 
 import sib_api_v3_sdk
 from sib_api_v3_sdk.rest import ApiException
 
 from config import settings
 from database import SessionLocal, engine, Base
-from models import User, AbuseLog, VerificationCode, PaymentReport, WebAnalysisSnapshot
+from models import User, AbuseLog, VerificationCode, PaymentReport, WebAnalysisSnapshot, FeedbackReport
 from schemas import (
     MessageResponse,
     SendRegisterCodeRequest, VerifyRegisterCodeRequest,
     LoginByAccountRequest, ForgotPasswordRequest, ResetPasswordRequest,
     AdminGrantFreeRequest, AdminSetPlanRequest, AdminRebindDeviceRequest,
-    AdminDeactivateUserRequest, PaymentReportCreateRequest,
+    AdminDeactivateUserRequest, PaymentReportCreateRequest, FeedbackSubmitRequest,
 )
 from security import hash_password, verify_password, create_access_token, decode_access_token
 
@@ -82,12 +83,23 @@ app.add_middleware(
 
 PLAN_DAYS = {
     "monthly": 30,
+    "halfyear": 180,
     "quarterly": 90,
     "yearly": 365,
     "trial": 30,
     "free_grant": 30,
-    "none": 0
+    "none": 0,
 }
+
+VALID_PAID_PLANS = ("monthly", "halfyear", "quarterly", "yearly")
+
+
+def normalize_plan_type(plan_type: str) -> str:
+    """對齊桌面版 halfyear；舊版 web 曾用 quarterly 表示半年。"""
+    plan = (plan_type or "").strip().lower()
+    if plan == "quarterly":
+        return "halfyear"
+    return plan
 
 
 def now_utc():
@@ -269,8 +281,8 @@ def compute_license_status(user: User):
                 label = f"活動贈送（剩餘 {days_left} 天）"
             elif plan_type == "monthly":
                 label = f"月訂閱（剩餘 {days_left} 天）"
-            elif plan_type == "quarterly":
-                label = f"季訂閱（剩餘 {days_left} 天）"
+            elif plan_type in ("halfyear", "quarterly"):
+                label = f"半年訂閱（剩餘 {days_left} 天）"
             elif plan_type == "yearly":
                 label = f"年訂閱（剩餘 {days_left} 天）"
             else:
@@ -339,6 +351,14 @@ def get_current_creator(authorization: Optional[str], db: Session) -> User:
     if not user.is_creator:
         raise HTTPException(status_code=403, detail="非創作者權限")
     return user
+
+
+def require_active_license(user: User) -> None:
+    if user.is_creator:
+        return
+    lic = compute_license_status(user)
+    if not lic.get("allowed"):
+        raise HTTPException(status_code=403, detail=lic.get("label") or "會員資格已到期")
 
 
 def ensure_default_creator(db: Session):
@@ -851,11 +871,15 @@ def payments_report(
     db: Session = Depends(get_db),
 ):
     user = get_current_user(authorization, db)
+    plan_type = normalize_plan_type(data.plan_type)
+    if plan_type not in VALID_PAID_PLANS:
+        raise HTTPException(status_code=400, detail="方案類型錯誤")
+
     item = PaymentReport(
         user_id=user.id,
         username=user.username,
         email=user.email,
-        plan_type=data.plan_type,
+        plan_type=plan_type,
         amount=data.amount,
         transfer_last5=data.transfer_last5,
         transfer_time=data.transfer_time,
@@ -870,6 +894,58 @@ def payments_report(
     return {"success": True, "message": "付款回報已送出，待管理員審核", "report_id": item.id}
 
 
+@app.post("/feedback/submit")
+def feedback_submit(
+    data: FeedbackSubmitRequest,
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    user = get_current_user(authorization, db)
+    feedback_id = (data.feedback_id or "").strip() or str(uuid.uuid4())
+    existing = db.query(FeedbackReport).filter(FeedbackReport.feedback_id == feedback_id).first()
+    if existing:
+        return {"success": True, "message": "回饋已收到", "feedback_id": feedback_id}
+
+    item = FeedbackReport(
+        user_id=user.id,
+        feedback_id=feedback_id,
+        account=user.username or "",
+        email=user.email or "",
+        topic=(data.topic or "").strip(),
+        content=(data.content or "").strip(),
+        app_version=(data.app_version or "web").strip(),
+        device_info=(data.device_info or "").strip(),
+        status="new",
+        created_at=now_utc(),
+    )
+    db.add(item)
+    db.commit()
+    return {"success": True, "message": "回饋已送出，感謝您的意見", "feedback_id": feedback_id}
+
+
+@app.get("/admin/feedback")
+def admin_feedback_list(
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    _ = get_current_creator(authorization, db)
+    rows = db.query(FeedbackReport).order_by(FeedbackReport.created_at.desc()).limit(200).all()
+    items = []
+    for r in rows:
+        items.append({
+            "id": r.id,
+            "feedback_id": r.feedback_id,
+            "account": r.account,
+            "email": r.email,
+            "topic": r.topic,
+            "content": r.content,
+            "app_version": r.app_version,
+            "status": r.status,
+            "created_at": r.created_at,
+        })
+    return {"success": True, "count": len(items), "items": items}
+
+
 @app.get("/admin/users")
 def admin_users(
     authorization: Optional[str] = Header(default=None),
@@ -877,6 +953,13 @@ def admin_users(
 ):
     _ = get_current_creator(authorization, db)
     users = db.query(User).order_by(User.created_at.desc()).all()
+    pending_rows = (
+        db.query(PaymentReport.user_id, func.count(PaymentReport.id))
+        .filter(PaymentReport.status == "pending")
+        .group_by(PaymentReport.user_id)
+        .all()
+    )
+    pending_map = {uid: cnt for uid, cnt in pending_rows}
     rows = []
     for u in users:
         lic = compute_license_status(u)
@@ -896,6 +979,7 @@ def admin_users(
             "device_id": u.device_id,
             "device_name": u.device_name,
             "created_at": u.created_at,
+            "pending_review": pending_map.get(u.id, 0),
         })
     return {"success": True, "count": len(rows), "items": rows}
 
@@ -952,6 +1036,7 @@ def admin_set_plan(
 
     if data.plan_type not in (
         "monthly",
+        "halfyear",
         "quarterly",
         "yearly",
         "trial",
@@ -963,11 +1048,12 @@ def admin_set_plan(
             detail="方案類型錯誤"
         )
 
+    plan_type = normalize_plan_type(data.plan_type) if data.plan_type in VALID_PAID_PLANS else data.plan_type
     start = now_utc()
-    end = start + timedelta(days=PLAN_DAYS[data.plan_type])
+    end = start + timedelta(days=PLAN_DAYS[plan_type])
 
     user.subscription_status = "active"
-    user.plan_type = data.plan_type
+    user.plan_type = plan_type
     user.subscription_start_at = start
     user.subscription_end_at = end
     user.payment_status = "approved"
@@ -1072,11 +1158,12 @@ def admin_approve_payment_report(
     if not user:
         raise HTTPException(status_code=404, detail="找不到使用者")
 
-    if report.plan_type not in ("monthly", "quarterly", "yearly"):
+    if report.plan_type not in VALID_PAID_PLANS:
         raise HTTPException(status_code=400, detail="付款方案錯誤")
 
+    plan_type = normalize_plan_type(report.plan_type)
     start = now_utc()
-    end = start + timedelta(days=PLAN_DAYS[report.plan_type])
+    end = start + timedelta(days=PLAN_DAYS[plan_type])
 
     report.status = "approved"
     report.review_note = f"approved by {admin.email}"
@@ -1084,7 +1171,7 @@ def admin_approve_payment_report(
     db.add(report)
 
     user.subscription_status = "active"
-    user.plan_type = report.plan_type
+    user.plan_type = plan_type
     user.subscription_start_at = start
     user.subscription_end_at = end
     user.payment_status = "approved"
@@ -1492,6 +1579,7 @@ def web_run_analysis(
 
     if not user.is_active:
         raise HTTPException(status_code=403, detail="帳號已停用")
+    require_active_license(user)
 
     _reload_web_analysis_from_db()
 
@@ -1527,7 +1615,8 @@ def web_get_bullish(
     authorization: Optional[str] = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    _ = get_current_user(authorization, db)
+    user = get_current_user(authorization, db)
+    require_active_license(user)
     return {"items": WEB_BULLISH_DATA}
 
 
@@ -1536,7 +1625,8 @@ def web_get_bearish(
     authorization: Optional[str] = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    _ = get_current_user(authorization, db)
+    user = get_current_user(authorization, db)
+    require_active_license(user)
     return {"items": WEB_BEARISH_DATA}
 
 
@@ -1545,7 +1635,8 @@ def web_get_warrants(
     authorization: Optional[str] = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    _ = get_current_user(authorization, db)
+    user = get_current_user(authorization, db)
+    require_active_license(user)
     return {"items": WEB_WARRANT_DATA}
 
 

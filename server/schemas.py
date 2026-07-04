@@ -70,9 +70,17 @@ class AdminDeactivateUserRequest(BaseModel):
 
 
 class PaymentReportCreateRequest(BaseModel):
-    plan_type: str  # monthly / quarterly / yearly
+    plan_type: str  # monthly / halfyear / yearly
     amount: Optional[float] = None
     transfer_last5: str = ""
     transfer_time: Optional[datetime] = None
     payer_name: str = ""
     note: str = ""
+
+
+class FeedbackSubmitRequest(BaseModel):
+    topic: str = Field(min_length=1, max_length=100)
+    content: str = Field(min_length=1, max_length=5000)
+    feedback_id: Optional[str] = ""
+    app_version: Optional[str] = "web"
+    device_info: Optional[str] = ""

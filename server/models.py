@@ -103,3 +103,19 @@ class AbuseLog(Base):
     event_type = Column(String(100), nullable=False)
     detail = Column(Text, nullable=True)
     created_at = Column(DateTime, default=now_utc)
+
+
+class FeedbackReport(Base):
+    __tablename__ = "feedback_reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    feedback_id = Column(String(64), unique=True, index=True, nullable=False)
+    account = Column(String(100), nullable=True, default="")
+    email = Column(String(255), nullable=True, default="")
+    topic = Column(String(100), nullable=False, default="")
+    content = Column(Text, nullable=False, default="")
+    app_version = Column(String(50), nullable=True, default="web")
+    device_info = Column(Text, nullable=True, default="")
+    status = Column(String(30), default="new")  # new / read / archived
+    created_at = Column(DateTime, default=now_utc)
