@@ -3,7 +3,7 @@
 網頁版策略分析（對齊桌面版 zhustock_app 核心邏輯，不含記憶檔）。
 
 使用者策略：
-- 看多：training pool 全顯示（週20MA+趨勢突破守穩+週量≥1萬，含上櫃補強）
+- 看多：TRAINING_POOL 再篩 StrongScore≥100（含上櫃補強後同條件）
 - 看空：桌面版 BEARISH_TRAINING_POOL 邏輯
 - 權證：StrongScore≥100、5星、剩餘 90~120 天、全部發行券商
 """
@@ -1072,8 +1072,13 @@ def build_bearish_pool(weekly_ma_df, master_df):
 
 
 def filter_bullish_for_display(pool_df):
-    """看多清單：對齊桌面版 CLIENT_BULLISH。"""
-    return build_client_bullish_view(pool_df)
+    """看多清單：TRAINING_POOL + StrongScore≥100（使用者指定）。"""
+    if pool_df is None or pool_df.empty:
+        return build_client_bullish_view(pool_df)
+    work = pool_df.copy()
+    work["StrongScore"] = pd.to_numeric(work["StrongScore"], errors="coerce")
+    filtered = work[work["StrongScore"] >= DISPLAY_MIN_SCORE].copy()
+    return build_client_bullish_view(filtered)
 
 
 def calc_display_star_by_score(score):
@@ -2024,7 +2029,7 @@ def run_web_strategy_analysis(include_warrants=True, progress_callback=None):
     strict_df = build_strict_breakout_sheet(weekly_ma_df, master_df)
     bearish_key_df = build_bearish_key_breakdown_sheet(weekly_ma_df, master_df)
 
-    bullish_display = build_client_bullish_view(training_pool)
+    bullish_display = filter_bullish_for_display(training_pool)
     bearish_display = build_client_bearish_view(bearish_pool)
     bullish_keyk_display = build_client_bullish_keyk_view(strict_df)
     bearish_keyk_display = build_client_bearish_keyk_view(bearish_key_df)
@@ -2083,7 +2088,7 @@ def run_web_strategy_analysis(include_warrants=True, progress_callback=None):
             "daily_rows": len(daily_all),
         },
         "strategy": {
-            "bullish": "CLIENT_BULLISH＝TRAINING_POOL（週量≥1萬、趨勢突破守穩、StrongScore≥55）＋上櫃補強40檔",
+            "bullish": "CLIENT_BULLISH＝TRAINING_POOL（週量≥1萬、趨勢突破守穩）再篩 StrongScore≥100",
             "bullish_keyk": "CLIENT_BULLISH_KEYK＝STRICT_BREAKOUT（本週正式突破趨勢線+盤整）",
             "bearish": "CLIENT_BEARISH＝BEARISH_TRAINING_POOL（週量≥1萬、跌破守穩、BearishScore≥55）",
             "bearish_keyk": "CLIENT_BEARISH_KEYK＝BEARISH_KEY_BREAKDOWN（本週正式跌破）",
