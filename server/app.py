@@ -75,7 +75,7 @@ app = FastAPI(title="ZHU STOCK PLATFORM - COMPLETE UPGRADE", version="2.0.0", li
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1634,6 +1634,11 @@ def web_run_analysis(
     }
 
 
+@app.get("/web/health")
+def web_health():
+    return {"ok": True}
+
+
 @app.get("/web/bullish")
 def web_get_bullish(
     authorization: Optional[str] = Header(default=None),
@@ -1641,6 +1646,7 @@ def web_get_bullish(
 ):
     user = get_current_user(authorization, db)
     require_active_license(user)
+    _reload_web_analysis_from_db()
     return {"items": WEB_BULLISH_DATA}
 
 
@@ -1651,6 +1657,7 @@ def web_get_bearish(
 ):
     user = get_current_user(authorization, db)
     require_active_license(user)
+    _reload_web_analysis_from_db()
     return {"items": WEB_BEARISH_DATA}
 
 
@@ -1661,6 +1668,7 @@ def web_get_warrants(
 ):
     user = get_current_user(authorization, db)
     require_active_license(user)
+    _reload_web_analysis_from_db()
     return {"items": WEB_WARRANT_DATA}
 
 
@@ -1671,6 +1679,7 @@ def web_get_bullish_keyk(
 ):
     user = get_current_user(authorization, db)
     require_active_license(user)
+    _reload_web_analysis_from_db()
     return {"items": WEB_BULLISH_KEYK_DATA}
 
 
@@ -1681,6 +1690,7 @@ def web_get_bearish_keyk(
 ):
     user = get_current_user(authorization, db)
     require_active_license(user)
+    _reload_web_analysis_from_db()
     return {"items": WEB_BEARISH_KEYK_DATA}
 
 

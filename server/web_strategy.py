@@ -1723,9 +1723,12 @@ def collect_daily_history(history_calendar_days=HISTORY_CALENDAR_DAYS, progress_
                     continue
         return batch_frames
 
+    from web_daily_cache import history_fetch_workers
+
+    listed_workers, otc_workers = history_fetch_workers()
     with ThreadPoolExecutor(max_workers=2) as outer:
-        listed_future = outer.submit(_run_market_tasks, listed_tasks, 16)
-        otc_future = outer.submit(_run_market_tasks, otc_tasks, 24)
+        listed_future = outer.submit(_run_market_tasks, listed_tasks, listed_workers)
+        otc_future = outer.submit(_run_market_tasks, otc_tasks, otc_workers)
         frames.extend(listed_future.result())
         frames.extend(otc_future.result())
 
