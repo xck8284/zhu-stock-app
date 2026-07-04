@@ -1395,12 +1395,30 @@ def _apply_web_analysis_result(result):
     return WEB_ANALYSIS_META
 
 
+def get_effective_cron_secret() -> str:
+    explicit = (settings.CRON_SECRET or "").strip()
+    if explicit:
+        return explicit
+    return (settings.SECRET_KEY or "").strip()
+
+
 def _verify_cron_secret(x_cron_secret: Optional[str]) -> None:
-    expected = (settings.CRON_SECRET or "").strip()
+    expected = get_effective_cron_secret()
     if not expected:
-        raise HTTPException(status_code=503, detail="CRON_SECRET 未設定，無法觸發自動分析")
+        raise HTTPException(status_code=503, detail="CRON_SECRET / SECRET_KEY 未設定，無法觸發自動分析")
     if (x_cron_secret or "").strip() != expected:
         raise HTTPException(status_code=403, detail="排程密鑰錯誤")
+
+
+@app.get("/web/public/status")
+def web_public_status():
+    """公開狀態（不含個股清單），供監控與前端顯示更新時間。"""
+    return {
+        "success": True,
+        **WEB_ANALYSIS_META,
+        "has_data": bool(WEB_BULLISH_DATA or WEB_BEARISH_DATA or WEB_WARRANT_DATA),
+        "cron_ready": bool(get_effective_cron_secret()),
+    }
 
 
 @app.get("/web/analysis-status")

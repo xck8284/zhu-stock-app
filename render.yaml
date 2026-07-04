@@ -23,4 +23,4 @@ services:
     schedule: "5 8 * * 1-5"
     dockerCommand: |
       curl -fsS -X POST "https://zhu-stock-app.onrender.com/web/cron/daily-analysis" \
-        -H "X-Cron-Secret: ${CRON_SECRET}"
+        -H "X-Cron-Secret: ${SECRET_KEY}"
