@@ -1282,23 +1282,45 @@ def infer_issuer_from_warrant_name(name):
     return ""
 
 
-def fetch_warrants_for_stock(target_code, stock_price=None):
+WARRANT_MARKET_URLS = [
+    "https://openapi.twse.com.tw/v1/opendata/t187ap47_L",
+    "https://www.tpex.org.tw/openapi/v1/t187ap47_O",
+    "https://openapi.tpex.org.tw/v1/t187ap47_O",
+]
+
+_warrant_market_batches_cache = None
+
+
+def fetch_warrant_market_data(force=False):
+    """全市場權證資料只抓一次（3 來源並行），避免每檔標的重複下載。"""
+    global _warrant_market_batches_cache
+    if not force and _warrant_market_batches_cache is not None:
+        return _warrant_market_batches_cache
+
+    def _fetch_url(url):
+        try:
+            response = _http_get(url, timeout=25)
+            return _flatten_json_records(response.json())
+        except Exception:
+            return []
+
+    batches = []
+    workers = min(3, len(WARRANT_MARKET_URLS))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for records in pool.map(_fetch_url, WARRANT_MARKET_URLS):
+            if records:
+                batches.append(records)
+
+    _warrant_market_batches_cache = batches
+    return batches
+
+
+def _warrants_from_record_batches(record_batches, target_code, stock_price=None):
     target_code = normalize_code(target_code)
-    urls = [
-        "https://openapi.twse.com.tw/v1/opendata/t187ap47_L",
-        "https://www.tpex.org.tw/openapi/v1/t187ap47_O",
-        "https://openapi.tpex.org.tw/v1/t187ap47_O",
-    ]
     today = datetime.now().date()
     rows = []
 
-    for url in urls:
-        try:
-            response = _http_get(url, timeout=25)
-            records = _flatten_json_records(response.json())
-        except Exception:
-            continue
-
+    for records in record_batches:
         if not records:
             continue
 
@@ -1375,14 +1397,20 @@ def fetch_warrants_for_stock(target_code, stock_price=None):
     return out_df.to_dict("records")
 
 
+def fetch_warrants_for_stock(target_code, stock_price=None, market_batches=None):
+    batches = market_batches if market_batches is not None else fetch_warrant_market_data()
+    return _warrants_from_record_batches(batches, target_code, stock_price=stock_price)
+
+
 def build_warrants_from_bullish(bullish_items):
     warrants = []
     seen = set()
+    market_batches = fetch_warrant_market_data(force=True)
     for stock in bullish_items[:MAX_WARRANT_STOCKS]:
         code = str(stock.get("stock_id") or stock.get("code") or "")
         if not code:
             continue
-        for item in fetch_warrants_for_stock(code):
+        for item in fetch_warrants_for_stock(code, market_batches=market_batches):
             key = (item.get("code"), item.get("name"))
             if key in seen:
                 continue

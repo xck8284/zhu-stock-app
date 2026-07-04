@@ -132,14 +132,14 @@ def get_running_progress(meta: dict | None = None) -> dict:
     if started is not None:
         elapsed_sec = max(0, int((tw_now() - started).total_seconds()))
 
-    # 完整分析約 1～3 分鐘（並行抓資料）
-    estimated_total = 3 * 60
-    progress = min(95, max(5, int(elapsed_sec / estimated_total * 100)))
-    if elapsed_sec < 30:
+    # 完整分析約 2～4 分鐘（並行抓資料 + 權證只下載一次）
+    estimated_total = 4 * 60
+    progress = min(98, max(5, int(elapsed_sec / estimated_total * 100)))
+    if elapsed_sec < 40:
         message = "正在抓取台股歷史資料…"
-    elif elapsed_sec < 90:
+    elif elapsed_sec < 120:
         message = "正在計算週K 與趨勢線…"
-    elif elapsed_sec < 150:
+    elif elapsed_sec < 180:
         message = "正在套用策略篩選…"
     else:
         message = "正在整理權證清單…"
