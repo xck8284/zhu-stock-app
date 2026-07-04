@@ -1,0 +1,21 @@
+name: Deploy backend
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy note
+        run: |
+          echo "Render auto-deploys server/ on push to main when Git integration is enabled."
+          echo "Service: https://zhu-stock-app.onrender.com"
+
+      - name: Optional Render deploy hook
+        if: ${{ secrets.RENDER_DEPLOY_HOOK != '' }}
+        run: curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
