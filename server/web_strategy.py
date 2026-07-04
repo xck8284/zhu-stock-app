@@ -56,10 +56,14 @@ WARRANT_MAX_DAYS = 120
 
 MAX_RESULTS = 100
 MAX_WARRANT_STOCKS = 8
-# 週K 20MA + 趨勢線最少約 24 週 → 約 130 個交易日即可（不必抓 160 天）
-MIN_TRADING_DAYS_TARGET = 130
-HISTORY_CALENDAR_DAYS = 200
+# 週K 20MA + 趨勢線需約 24 週以上；並行抓取仍可在 2～3 分鐘內完成
+MIN_TRADING_DAYS_TARGET = 165
+HISTORY_CALENDAR_DAYS = 240
 FETCH_WORKERS = 12
+
+# 權證專用（桌面版 build_warrant_fastscan 同款）
+WARRANT_MIN_SCORE = 100
+WARRANT_MIN_STARS = 5
 
 
 def clean_text(value):
@@ -1050,19 +1054,32 @@ def build_bearish_pool(weekly_ma_df, master_df):
 
 
 def filter_bullish_for_display(pool_df):
+    """看多清單：對齊桌面版 CLIENT_BULLISH，顯示完整 training pool（趨勢突破守穩）。"""
     if pool_df is None or pool_df.empty:
         return pool_df
     work = pool_df.copy()
     work["StrongScore"] = pd.to_numeric(work["StrongScore"], errors="coerce")
     work["星等數值"] = pd.to_numeric(work["星等數值"], errors="coerce")
     work["最新一週成交量(張)"] = pd.to_numeric(work["最新一週成交量(張)"], errors="coerce")
+    work = work[work["最新一週成交量(張)"] >= MIN_WEEKLY_VOLUME].copy()
+    work = work.sort_values(
+        ["StrongScore", "星等數值", "最新一週成交量(張)", "股票代號"],
+        ascending=[False, False, False, True],
+    )
+    return work.head(MAX_RESULTS)
+
+
+def filter_warrant_candidates(pool_df):
+    """權證：StrongScore≥100 且 5 星（桌面版權證快篩）。"""
+    if pool_df is None or pool_df.empty:
+        return pool_df
+    work = pool_df.copy()
+    work["StrongScore"] = pd.to_numeric(work["StrongScore"], errors="coerce")
+    work["星等數值"] = pd.to_numeric(work["星等數值"], errors="coerce")
     filtered = work[
-        (work["StrongScore"] >= DISPLAY_MIN_SCORE)
-        & (work["星等數值"] >= DISPLAY_MIN_STARS)
-        & (work["最新一週成交量(張)"] >= MIN_WEEKLY_VOLUME)
-        & (work["是否突破後守穩趨勢線"] == "是")
+        (work["StrongScore"] >= WARRANT_MIN_SCORE) & (work["星等數值"] >= WARRANT_MIN_STARS)
     ].copy()
-    return filtered.sort_values(["StrongScore", "星等數值", "最新一週成交量(張)"], ascending=[False, False, False]).head(MAX_RESULTS)
+    return filtered.sort_values(["StrongScore", "乖離率(%)", "股票代號"], ascending=[False, True, True])
 
 
 def pool_to_api_items(pool_df, score_col="StrongScore"):
@@ -1408,7 +1425,10 @@ def run_web_strategy_analysis():
     bullish_display = filter_bullish_for_display(training_pool)
     bullish_items = pool_to_api_items(bullish_display, score_col="StrongScore")
     bearish_items = pool_to_api_items(bearish_pool.head(MAX_RESULTS), score_col="BearishScore")
-    warrants = build_warrants_from_bullish(bullish_items)
+
+    warrant_pool = filter_warrant_candidates(training_pool)
+    warrant_items = pool_to_api_items(warrant_pool, score_col="StrongScore")
+    warrants = build_warrants_from_bullish(warrant_items)
 
     settle_date = ""
     if "日期" in daily_all.columns:
@@ -1421,16 +1441,19 @@ def run_web_strategy_analysis():
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "settle_date": settle_date,
         "source": "web-strategy-weekly",
-        "market": "上市+上櫃（週K｜StrongScore≥100｜5星｜週量≥1萬｜趨勢突破）",
+        "market": "上市+上櫃（週K｜趨勢突破守穩｜週量≥1萬）",
         "bullish": bullish_items,
         "bearish": bearish_items,
         "warrants": warrants,
         "bullish_count": len(bullish_items),
         "bearish_count": len(bearish_items),
         "warrant_count": len(warrants),
+        "pool_count": len(training_pool),
+        "warrant_candidate_count": len(warrant_pool),
         "strategy": {
-            "min_score": DISPLAY_MIN_SCORE,
-            "min_stars": DISPLAY_MIN_STARS,
+            "bullish": "週20MA+趨勢線突破守穩+週量≥1萬（同桌面看多）",
+            "warrant_min_score": WARRANT_MIN_SCORE,
+            "warrant_min_stars": WARRANT_MIN_STARS,
             "min_weekly_volume": MIN_WEEKLY_VOLUME,
             "bias_limit": None,
             "require_weekly_20ma_breakout": True,
