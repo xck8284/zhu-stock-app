@@ -141,7 +141,7 @@ def recover_stale_running_job(meta: dict | None = None) -> dict:
             meta = _set_job_meta(
                 meta,
                 "failed",
-                f"分析未完成（建立 480 天歷史需 15～20 分鐘，已跑 {int(elapsed_min)} 分鐘）。請再按「強制重新啟動」",
+                f"分析未完成（建立 460 天歷史需 10～15 分鐘，已跑 {int(elapsed_min)} 分鐘）。請再按「強制重新啟動」",
             )
         save_web_analysis_result(meta)
         _job_running = False
@@ -226,7 +226,7 @@ def run_analysis_and_persist(trigger: str = "manual") -> dict:
         running_meta = _set_job_meta(load_web_analysis_result() or {}, "running")
         running_meta["analysis_data_ready"] = False
         running_meta["job_progress"] = 5
-        running_meta["job_message"] = "正在抓取台股歷史資料（對齊桌面版 480 天）…"
+        running_meta["job_message"] = "正在抓取台股歷史資料（對齊桌面版 460 天）…"
         save_web_analysis_result(running_meta)
         _notify_analysis_complete(running_meta)
 
