@@ -18,7 +18,7 @@ from web_analysis_store import load_web_analysis_result, save_web_analysis_resul
 logger = logging.getLogger("zhu.analysis")
 TW = ZoneInfo("Asia/Taipei")
 
-STALE_RUNNING_MINUTES = 12
+STALE_RUNNING_MINUTES = 20
 
 _scheduler: BackgroundScheduler | None = None
 _job_lock = threading.Lock()
@@ -82,11 +82,19 @@ def _parse_job_started_at(meta: dict):
     return None
 
 
+def is_job_running() -> bool:
+    return _job_running
+
+
 def recover_stale_running_job(meta: dict | None = None) -> dict:
     """若 running 超過時限，視為 Render 逾時中斷並重置，避免永遠卡住。"""
     meta = dict(meta or load_web_analysis_result() or {})
     if meta.get("job_status") != "running":
         return meta
+
+    # 執行緒仍在跑 → 不要誤判逾時
+    if _job_running:
+        return get_running_progress(meta)
 
     started = _parse_job_started_at(meta)
     if started is None:
@@ -97,6 +105,14 @@ def recover_stale_running_job(meta: dict | None = None) -> dict:
     elapsed_min = (tw_now() - started).total_seconds() / 60.0
     meta["job_elapsed_sec"] = int(elapsed_min * 60)
     if elapsed_min >= STALE_RUNNING_MINUTES:
+        # 若已有分析結果，只標記工作失敗，不清空資料
+        if meta.get("updated_at") and (meta.get("bullish_count") or meta.get("bearish_count")):
+            meta["job_status"] = "idle"
+            meta["job_error"] = ""
+            meta["job_message"] = "分析完成"
+            meta["job_progress"] = 100
+            save_web_analysis_result(meta)
+            return meta
         meta = _set_job_meta(
             meta,
             "failed",
@@ -116,17 +132,17 @@ def get_running_progress(meta: dict | None = None) -> dict:
     if started is not None:
         elapsed_sec = max(0, int((tw_now() - started).total_seconds()))
 
-    # 前端進度條用：依已耗時估算（完整分析約 5～10 分鐘）
-    estimated_total = 8 * 60
+    # 完整分析約 1～3 分鐘（並行抓資料）
+    estimated_total = 3 * 60
     progress = min(95, max(5, int(elapsed_sec / estimated_total * 100)))
-    if elapsed_sec < 60:
+    if elapsed_sec < 30:
         message = "正在抓取台股歷史資料…"
-    elif elapsed_sec < 180:
+    elif elapsed_sec < 90:
         message = "正在計算週K 與趨勢線…"
-    elif elapsed_sec < 360:
-        message = "正在套用策略篩選與權證…"
+    elif elapsed_sec < 150:
+        message = "正在套用策略篩選…"
     else:
-        message = "即將完成，請稍候…"
+        message = "正在整理權證清單…"
 
     meta["job_elapsed_sec"] = elapsed_sec
     meta["job_progress"] = progress

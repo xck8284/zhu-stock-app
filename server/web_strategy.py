@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -24,6 +25,10 @@ SESSION.headers.update(
         "Accept": "application/json,text/plain,*/*",
     }
 )
+
+
+def _http_get(url, params=None, timeout=20):
+    return requests.get(url, params=params, timeout=timeout, headers=SESSION.headers)
 
 # --- 策略常數（對齊桌面版） ---
 MIN_WEEKLY_VOLUME = 10000
@@ -50,8 +55,11 @@ WARRANT_MIN_DAYS = 90
 WARRANT_MAX_DAYS = 120
 
 MAX_RESULTS = 100
-MAX_WARRANT_STOCKS = 25
-HISTORY_CALENDAR_DAYS = 220
+MAX_WARRANT_STOCKS = 8
+# 週K 20MA + 趨勢線最少約 24 週 → 約 130 個交易日即可（不必抓 160 天）
+MIN_TRADING_DAYS_TARGET = 130
+HISTORY_CALENDAR_DAYS = 200
+FETCH_WORKERS = 12
 
 
 def clean_text(value):
@@ -1093,7 +1101,7 @@ def fetch_twse_daily_all(date_obj):
     url = "https://www.twse.com.tw/exchangeReport/MI_INDEX"
     params = {"response": "json", "date": date_obj.strftime("%Y%m%d"), "type": "ALLBUT0999"}
     try:
-        response = SESSION.get(url, params=params, timeout=20)
+        response = _http_get(url, params=params, timeout=20)
         response.raise_for_status()
         payload = response.json()
     except Exception:
@@ -1133,7 +1141,7 @@ def fetch_tpex_daily_all(date_obj):
     url = "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes"
     params = {"response": "json", "date": date_obj.strftime("%Y/%m/%d")}
     try:
-        response = SESSION.get(url, params=params, timeout=15)
+        response = _http_get(url, params=params, timeout=15)
         payload = response.json()
     except Exception:
         return None
@@ -1187,26 +1195,40 @@ def fetch_tpex_daily_all(date_obj):
 
 
 def collect_daily_history(max_calendar_days=HISTORY_CALENDAR_DAYS):
-    frames = []
+    """並行抓取上市/上櫃日資料（策略明確，瓶頸在資料下載而非運算）。"""
     cursor = datetime.now()
     attempts = 0
-    trading_days = 0
+    dates = []
 
-    while attempts < max_calendar_days and trading_days < 160:
-        if cursor.weekday() >= 5:
-            cursor -= timedelta(days=1)
-            attempts += 1
-            continue
-
-        twse = fetch_twse_daily_all(cursor)
-        tpex = fetch_tpex_daily_all(cursor)
-        day_frames = [x for x in [twse, tpex] if isinstance(x, pd.DataFrame) and not x.empty]
-        if day_frames:
-            frames.extend(day_frames)
-            trading_days += 1
-
+    while attempts < max_calendar_days and len(dates) < MIN_TRADING_DAYS_TARGET:
+        if cursor.weekday() < 5:
+            dates.append(cursor.date())
         cursor -= timedelta(days=1)
         attempts += 1
+
+    if not dates:
+        return pd.DataFrame()
+
+    def _fetch_one(day):
+        day_obj = datetime.combine(day, datetime.min.time())
+        parts = []
+        twse = fetch_twse_daily_all(day_obj)
+        if isinstance(twse, pd.DataFrame) and not twse.empty:
+            parts.append(twse)
+        tpex = fetch_tpex_daily_all(day_obj)
+        if isinstance(tpex, pd.DataFrame) and not tpex.empty:
+            parts.append(tpex)
+        return parts
+
+    frames = []
+    workers = min(FETCH_WORKERS, max(1, len(dates)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_fetch_one, day) for day in dates]
+        for future in as_completed(futures):
+            try:
+                frames.extend(future.result())
+            except Exception:
+                continue
 
     if not frames:
         return pd.DataFrame()
@@ -1255,7 +1277,7 @@ def fetch_warrants_for_stock(target_code, stock_price=None):
 
     for url in urls:
         try:
-            response = SESSION.get(url, timeout=25)
+            response = _http_get(url, timeout=25)
             records = _flatten_json_records(response.json())
         except Exception:
             continue
