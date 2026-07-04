@@ -51,16 +51,17 @@ BOX_MIN_WEEKS = 4
 TRAINING_SCORE_THRESHOLD = 55
 BEARISH_TRAINING_SCORE_THRESHOLD = 55
 
-# 網頁展示篩選（使用者指定）
-DISPLAY_MIN_SCORE = 100
 DISPLAY_MIN_STARS = 5
+USE_STABLE_COMPLETED_DAY = True
+MARKET_FINAL_HOUR = 14
+MARKET_FINAL_MINUTE = 10
 WARRANT_MIN_DAYS = 90
 WARRANT_MAX_DAYS = 120
 
 MAX_WARRANT_RESULTS = 100
 MAX_WARRANT_STOCKS = 12
 # 對齊桌面版：history_end - 460 天，約 60 週（LOOKBACK_WEEKS=60）
-HISTORY_CALENDAR_DAYS = 480
+HISTORY_CALENDAR_DAYS = 460
 FETCH_WORKERS = 32
 HTTP_TIMEOUT = 12
 
@@ -218,6 +219,41 @@ def calc_bias_pct(close_, ma20):
 
 def get_memory_bonus(_direction, _code, _trend_info):
     return 0, ""
+
+
+def get_effective_reference_today():
+    now = datetime.now()
+    if USE_STABLE_COMPLETED_DAY:
+        cutoff = now.replace(hour=MARKET_FINAL_HOUR, minute=MARKET_FINAL_MINUTE, second=0, microsecond=0)
+        if now < cutoff:
+            return (now - timedelta(days=1)).date()
+    return now.date()
+
+
+def get_latest_available_trading_date(max_lookback_days=20):
+    """對齊桌面版：14:10 前用昨日；回推找最近有行情的交易日。"""
+    base_today = get_effective_reference_today()
+    for i in range(max_lookback_days + 1):
+        d = base_today - timedelta(days=i)
+        if d.weekday() >= 5:
+            continue
+        try:
+            df1 = fetch_twse_daily_all(d)
+            if isinstance(df1, pd.DataFrame) and not df1.empty:
+                return d
+        except Exception:
+            pass
+        try:
+            df2 = fetch_tpex_daily_all(d)
+            if isinstance(df2, pd.DataFrame) and not df2.empty:
+                return d
+        except Exception:
+            pass
+    for i in range(max_lookback_days + 1):
+        d = base_today - timedelta(days=i)
+        if d.weekday() < 5:
+            return d
+    return base_today
 
 
 def line_value(x1, y1, x2, y2, x):
@@ -451,6 +487,7 @@ def analyze_best_descending_trendline(sub_df):
                     "box_high": box_high,
                     "box_low": box_low,
                     "box_distance_pct": box_distance_pct,
+                    "descent_pct": descent_pct,
                     "strict_ok": strict_ok,
                     "training_hold_ok": training_hold_ok,
                     "hold_info": hold_info,
@@ -554,6 +591,7 @@ def analyze_best_ascending_trendline(sub_df):
                     "j": j,
                     "latest_line": latest_line,
                     "line_distance_pct": line_distance_pct,
+                    "ascent_pct": ascent_pct,
                     "training_hold_ok": training_hold_ok,
                     "hold_info": hold_info,
                     "work_df": work,
@@ -795,6 +833,26 @@ def calc_bearish_training_score(grp, trend_info):
                 score += 5
                 tags.append("接近13週低")
 
+    if pd.notna(low26) and low26 > 0:
+        d26 = safe_pct(close_, low26)
+        if d26 is not None:
+            if d26 <= 3:
+                score += 8
+                tags.append("近26週低")
+            elif d26 <= 8:
+                score += 4
+                tags.append("接近26週低")
+
+    if pd.notna(low52) and low52 > 0:
+        d52 = safe_pct(close_, low52)
+        if d52 is not None:
+            if d52 <= 5:
+                score += 8
+                tags.append("接近52週低")
+            elif d52 <= 12:
+                score += 4
+                tags.append("中長期弱勢")
+
     if trend_info is not None:
         line_dist = trend_info.get("line_distance_pct")
         if trend_info.get("line_break_now"):
@@ -809,6 +867,14 @@ def calc_bearish_training_score(grp, trend_info):
         elif line_dist is not None and line_dist <= 4:
             score += 4
             tags.append("逼近上升趨勢線")
+
+        mem_bonus = trend_info.get("memory_bonus", 0)
+        if mem_bonus > 0:
+            score += mem_bonus
+            tags.append("經驗加分")
+        elif mem_bonus < 0:
+            score += mem_bonus
+            tags.append("經驗扣分")
 
     if pd.notna(open_) and pd.notna(close_) and open_ > 0:
         body_pct_val = safe_pct(close_, open_)
@@ -1072,13 +1138,8 @@ def build_bearish_pool(weekly_ma_df, master_df):
 
 
 def filter_bullish_for_display(pool_df):
-    """看多清單：TRAINING_POOL + StrongScore≥100（使用者指定）。"""
-    if pool_df is None or pool_df.empty:
-        return build_client_bullish_view(pool_df)
-    work = pool_df.copy()
-    work["StrongScore"] = pd.to_numeric(work["StrongScore"], errors="coerce")
-    filtered = work[work["StrongScore"] >= DISPLAY_MIN_SCORE].copy()
-    return build_client_bullish_view(filtered)
+    """同桌面版 CLIENT_BULLISH：TRAINING_POOL 全量 + mix 排序（不篩 ≥100）。"""
+    return build_client_bullish_view(pool_df)
 
 
 def calc_display_star_by_score(score):
@@ -1675,7 +1736,7 @@ def collect_daily_history(history_calendar_days=HISTORY_CALENDAR_DAYS, progress_
     """並行抓取上市/上櫃日資料（對齊桌面版 ~460 天）；有 DB 快取後日常只補最新 1～2 天。"""
     from web_daily_cache import fetch_market_day_cached
 
-    end_date = datetime.now().date()
+    end_date = get_latest_available_trading_date()
     start_date = end_date - timedelta(days=history_calendar_days)
 
     dates = []
@@ -2032,7 +2093,7 @@ def run_web_strategy_analysis(include_warrants=True, progress_callback=None):
     strict_df = build_strict_breakout_sheet(weekly_ma_df, master_df)
     bearish_key_df = build_bearish_key_breakdown_sheet(weekly_ma_df, master_df)
 
-    bullish_display = filter_bullish_for_display(training_pool)
+    bullish_display = build_client_bullish_view(training_pool)
     bearish_display = build_client_bearish_view(bearish_pool)
     bullish_keyk_display = build_client_bullish_keyk_view(strict_df)
     bearish_keyk_display = build_client_bearish_keyk_view(bearish_key_df)
@@ -2046,12 +2107,7 @@ def run_web_strategy_analysis(include_warrants=True, progress_callback=None):
     warrant_items = pool_to_api_items(warrant_pool, score_col="StrongScore")
     warrants = build_warrants_from_bullish(warrant_items) if include_warrants else []
 
-    settle_date = ""
-    if "日期" in daily_all.columns:
-        try:
-            settle_date = pd.to_datetime(daily_all["日期"]).max().strftime("%Y-%m-%d")
-        except Exception:
-            settle_date = ""
+    settle_date = fmt_date_ymd(get_latest_available_trading_date())
 
     listed_n = 0
     otc_n = 0
@@ -2091,7 +2147,7 @@ def run_web_strategy_analysis(include_warrants=True, progress_callback=None):
             "daily_rows": len(daily_all),
         },
         "strategy": {
-            "bullish": "CLIENT_BULLISH＝TRAINING_POOL（週量≥1萬、趨勢突破守穩）再篩 StrongScore≥100",
+            "bullish": "CLIENT_BULLISH＝TRAINING_POOL（週量≥1萬、趨勢突破守穩、StrongScore≥55）",
             "bullish_keyk": "CLIENT_BULLISH_KEYK＝STRICT_BREAKOUT（本週正式突破趨勢線+盤整）",
             "bearish": "CLIENT_BEARISH＝BEARISH_TRAINING_POOL（週量≥1萬、跌破守穩、BearishScore≥55）",
             "bearish_keyk": "CLIENT_BEARISH_KEYK＝BEARISH_KEY_BREAKDOWN（本週正式跌破）",
