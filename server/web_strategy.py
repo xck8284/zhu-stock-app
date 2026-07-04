@@ -3,9 +3,9 @@
 網頁版策略分析（對齊桌面版 zhustock_app 核心邏輯，不含記憶檔）。
 
 使用者策略：
-- 看多：StrongScore>=100、星等>=5、週量>=10000、站上週20MA+趨勢線突破守穩、乖離率無上限
+- 看多：training pool 全顯示（週20MA+趨勢突破守穩+週量≥1萬，含上櫃補強）
 - 看空：桌面版 BEARISH_TRAINING_POOL 邏輯
-- 權證：剩餘天數 90~120、全部發行券商
+- 權證：StrongScore≥100、5星、剩餘 90~120 天、全部發行券商
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import json
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+from io import StringIO
 
 import pandas as pd
 import requests
@@ -55,12 +56,12 @@ DISPLAY_MIN_STARS = 5
 WARRANT_MIN_DAYS = 90
 WARRANT_MAX_DAYS = 120
 
-MAX_RESULTS = 100
-MAX_WARRANT_STOCKS = 8
+MAX_WARRANT_RESULTS = 100
+MAX_WARRANT_STOCKS = 12
 # 週K 20MA + 趨勢線；有 DB 日資料快取後，日常更新可壓到 ~1 分鐘
 MIN_TRADING_DAYS_TARGET = 130
 HISTORY_CALENDAR_DAYS = 200
-FETCH_WORKERS = 20
+FETCH_WORKERS = 24
 HTTP_TIMEOUT = 12
 
 # 權證專用（桌面版 build_warrant_fastscan 同款）
@@ -89,6 +90,17 @@ def normalize_code(code):
     code = clean_text(code)
     match = re.match(r"^(\d{4,6})", code)
     return match.group(1) if match else code
+
+
+def roc_date_str(dt_obj):
+    roc_year = dt_obj.year - 1911
+    return f"{roc_year}/{dt_obj.month:02d}/{dt_obj.day:02d}"
+
+
+def fmt_date_ymd(dt_obj):
+    if isinstance(dt_obj, str):
+        return dt_obj
+    return dt_obj.strftime("%Y-%m-%d")
 
 
 def is_valid_stock_code(code):
@@ -1271,15 +1283,13 @@ def pool_to_api_items(pool_df, score_col="StrongScore"):
         score_val = row.get(score_col)
         if score_val is None or (isinstance(score_val, float) and pd.isna(score_val)):
             score_val = 0
-        items.append(
-            {
+        item = {
                 "stock_id": str(row["股票代號"]),
                 "code": str(row["股票代號"]),
                 "name": str(row.get("股票名稱", "")),
                 "industry": str(row.get("產業別", "")),
                 "market": str(row.get("市場別", "")),
                 "direction": "看多" if score_col == "StrongScore" else "看空",
-                "strong_score": float(score_val),
                 "stars": str(row.get("星等", "")),
                 "bias": bias_text,
                 "settle_date": str(row.get("週結算日期", "")),
@@ -1287,7 +1297,12 @@ def pool_to_api_items(pool_df, score_col="StrongScore"):
                 "long_alarm": str(row.get("長線停利Alarm") or row.get("長線回補Alarm") or ""),
                 "memory_note": str(row.get("記憶回饋", "") or ""),
             }
-        )
+        if score_col == "BearishScore":
+            item["bearish_score"] = float(score_val)
+            item["strong_score"] = float(score_val)
+        else:
+            item["strong_score"] = float(score_val)
+        items.append(item)
     return items
 
 
@@ -1342,47 +1357,87 @@ def fetch_twse_daily_all(date_obj):
 
 
 def fetch_tpex_daily_all(date_obj):
-    url = "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes"
-    params = {"response": "json", "date": date_obj.strftime("%Y/%m/%d")}
-    try:
-        response = _http_get(url, params=params, timeout=15)
-        payload = response.json()
-    except Exception:
-        return None
+    """抓取上櫃 TPEx 每日收盤（對齊桌面版 v5：JSON + 舊版 + HTML 多重來源）。"""
 
-    rows = []
-    tables = payload.get("tables") or payload.get("table") or []
-    if isinstance(tables, dict):
-        tables = [tables]
-    for table in tables:
-        data = table.get("data") or table.get("aaData") or []
-        fields = [clean_text(x if not isinstance(x, dict) else x.get("title", "")) for x in (table.get("fields") or [])]
-        for raw in data:
-            if isinstance(raw, dict):
-                code = normalize_code(raw.get("SecuritiesCompanyCode") or raw.get("代號") or raw.get("Code") or "")
-                name = clean_text(raw.get("CompanyName") or raw.get("名稱") or raw.get("Name") or "")
-                close_price = parse_number(raw.get("Close") or raw.get("收盤價"))
-                open_price = parse_number(raw.get("Open") or raw.get("開盤價"))
-                high_price = parse_number(raw.get("High") or raw.get("最高價"))
-                low_price = parse_number(raw.get("Low") or raw.get("最低價"))
-                volume_shares = parse_number(raw.get("TradingShares") or raw.get("成交股數"), is_int=True)
+    def _extract_rows_and_fields(obj):
+        if not isinstance(obj, dict):
+            return [], []
+        for key in ["tables", "table"]:
+            if isinstance(obj.get(key), list):
+                for table in obj.get(key):
+                    if isinstance(table, dict):
+                        rows = table.get("data") or table.get("aaData") or table.get("rows") or []
+                        fields = table.get("fields") or table.get("columns") or table.get("titles") or []
+                        if rows:
+                            return rows, fields
+        rows = obj.get("data") or obj.get("aaData") or obj.get("rows") or []
+        fields = obj.get("fields") or obj.get("columns") or obj.get("titles") or []
+        return rows or [], fields or []
+
+    def _field_text(value):
+        if isinstance(value, dict):
+            return clean_text(value.get("title") or value.get("name") or value.get("key") or value.get("data") or "")
+        return clean_text(value)
+
+    def _parse_rows(rows, fields=None):
+        fields = [_field_text(x) for x in (fields or [])]
+        parsed = []
+
+        def idx_by_keywords(groups, default=None):
+            for kws in groups:
+                for i, field in enumerate(fields):
+                    if all(k in field for k in kws):
+                        return i
+            return default
+
+        code_i = idx_by_keywords([["代號"], ["證券", "代號"]], 0)
+        name_i = idx_by_keywords([["名稱"], ["證券", "名稱"]], 1)
+        close_i = idx_by_keywords([["收盤"]], 2)
+        open_i = idx_by_keywords([["開盤"]], 4)
+        high_i = idx_by_keywords([["最高"]], 5)
+        low_i = idx_by_keywords([["最低"]], 6)
+        vol_i = idx_by_keywords([["成交", "股"], ["成交股數"], ["成交", "數量"]], 8)
+
+        for row in rows:
+            if isinstance(row, dict):
+                code = normalize_code(
+                    row.get("代號") or row.get("證券代號") or row.get("股票代號") or row.get("Code") or ""
+                )
+                name = clean_text(row.get("名稱") or row.get("證券名稱") or row.get("股票名稱") or row.get("Name") or "")
+                close_price = parse_number(row.get("收盤") or row.get("收盤價") or row.get("Close"))
+                open_price = parse_number(row.get("開盤") or row.get("開盤價") or row.get("Open"))
+                high_price = parse_number(row.get("最高") or row.get("最高價") or row.get("High"))
+                low_price = parse_number(row.get("最低") or row.get("最低價") or row.get("Low"))
+                volume_shares = parse_number(
+                    row.get("成交股數") or row.get("成交股數(股)") or row.get("成交數量") or row.get("TradeVolume"),
+                    is_int=True,
+                )
             else:
-                if not fields:
+                if not isinstance(row, (list, tuple)) or len(row) < 7:
                     continue
-                row = {fields[i]: raw[i] if i < len(raw) else "" for i in range(len(fields))}
-                code = normalize_code(row.get("代號") or row.get("證券代號") or "")
-                name = clean_text(row.get("名稱") or row.get("證券名稱") or "")
-                close_price = parse_number(row.get("收盤價"))
-                open_price = parse_number(row.get("開盤價"))
-                high_price = parse_number(row.get("最高價"))
-                low_price = parse_number(row.get("最低價"))
-                volume_shares = parse_number(row.get("成交股數"), is_int=True)
+
+                def gv(index):
+                    return row[index] if index is not None and index < len(row) else ""
+
+                code = normalize_code(gv(code_i))
+                name = clean_text(gv(name_i))
+                close_price = parse_number(gv(close_i))
+                open_price = parse_number(gv(open_i))
+                high_price = parse_number(gv(high_i))
+                low_price = parse_number(gv(low_i))
+                volume_shares = parse_number(gv(vol_i), is_int=True)
+                if volume_shares is None:
+                    for cand_i in [8, 9, 10, 11, 7]:
+                        candidate = parse_number(gv(cand_i), is_int=True)
+                        if candidate is not None and candidate >= 1000:
+                            volume_shares = candidate
+                            break
 
             if not is_valid_stock_code(code) or close_price is None:
                 continue
-            rows.append(
+            parsed.append(
                 {
-                    "日期": date_obj.strftime("%Y-%m-%d"),
+                    "日期": fmt_date_ymd(date_obj),
                     "股票代號": code,
                     "股票名稱": name,
                     "開盤價": open_price,
@@ -1393,9 +1448,79 @@ def fetch_tpex_daily_all(date_obj):
                     "市場別": "上櫃",
                 }
             )
-    if not rows:
-        return None
-    return pd.DataFrame(rows).reset_index(drop=True)
+        return pd.DataFrame(parsed) if parsed else None
+
+    ad_date_slash = date_obj.strftime("%Y/%m/%d")
+    roc = roc_date_str(date_obj)
+
+    json_sources = [
+        ("https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes", {"response": "json", "date": ad_date_slash}),
+        (
+            "https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php",
+            {"l": "zh-tw", "d": roc, "o": "json", "s": "0,asc,0"},
+        ),
+    ]
+
+    for url, params in json_sources:
+        try:
+            response = _http_get(url, params=params, timeout=12)
+            obj = response.json()
+            rows, fields = _extract_rows_and_fields(obj)
+            df = _parse_rows(rows, fields)
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                return df.reset_index(drop=True)
+        except Exception:
+            continue
+
+    html_sources = [
+        ("https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes", {"response": "html", "date": ad_date_slash}),
+        (
+            "https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php",
+            {"l": "zh-tw", "o": "htm", "d": roc, "se": "AL", "s": "0,asc,0"},
+        ),
+    ]
+    for url, params in html_sources:
+        try:
+            response = _http_get(url, params=params, timeout=12)
+            tables = pd.read_html(StringIO(response.text))
+            for tbl in tables:
+                if isinstance(tbl.columns, pd.MultiIndex):
+                    tbl.columns = tbl.columns.get_level_values(-1)
+                tbl.columns = [clean_text(c) for c in tbl.columns]
+                cols = list(tbl.columns)
+                code_col = _pick_col(cols, ["代號"]) or _pick_col(cols, ["證券", "代號"])
+                name_col = _pick_col(cols, ["名稱"]) or _pick_col(cols, ["證券", "名稱"])
+                close_col = _pick_col(cols, ["收盤"])
+                open_col = _pick_col(cols, ["開盤"])
+                high_col = _pick_col(cols, ["最高"])
+                low_col = _pick_col(cols, ["最低"])
+                vol_col = _pick_col(cols, ["成交", "股"]) or _pick_col(cols, ["成交股數"])
+                if not all([code_col, name_col, close_col, open_col, high_col, low_col]):
+                    continue
+                html_rows = []
+                for _, rr in tbl.iterrows():
+                    code = normalize_code(rr.get(code_col, ""))
+                    if not is_valid_stock_code(code):
+                        continue
+                    html_rows.append(
+                        {
+                            "日期": fmt_date_ymd(date_obj),
+                            "股票代號": code,
+                            "股票名稱": clean_text(rr.get(name_col, "")),
+                            "開盤價": parse_number(rr.get(open_col)),
+                            "最高價": parse_number(rr.get(high_col)),
+                            "最低價": parse_number(rr.get(low_col)),
+                            "收盤價": parse_number(rr.get(close_col)),
+                            "成交股數": int(parse_number(rr.get(vol_col), is_int=True) or 0) if vol_col else 0,
+                            "市場別": "上櫃",
+                        }
+                    )
+                if html_rows:
+                    return pd.DataFrame(html_rows).reset_index(drop=True)
+        except Exception:
+            continue
+
+    return None
 
 
 def collect_daily_history(max_calendar_days=HISTORY_CALENDAR_DAYS):
@@ -1470,6 +1595,7 @@ def infer_issuer_from_warrant_name(name):
 
 WARRANT_MARKET_URLS = [
     "https://openapi.twse.com.tw/v1/opendata/t187ap47_L",
+    "https://www.tpex.org.tw/openapi/v1/t187ap47_O",
     "https://openapi.tpex.org.tw/v1/t187ap47_O",
 ]
 
@@ -1477,14 +1603,14 @@ _warrant_market_batches_cache = None
 
 
 def fetch_warrant_market_data(force=False):
-    """全市場權證資料只抓一次（3 來源並行），避免每檔標的重複下載。"""
+    """全市場權證資料只抓一次（多來源並行），避免每檔標的重複下載。"""
     global _warrant_market_batches_cache
     if not force and _warrant_market_batches_cache is not None:
         return _warrant_market_batches_cache
 
     def _fetch_url(url):
         try:
-            response = _http_get(url, timeout=25)
+            response = _http_get(url, timeout=20)
             return _flatten_json_records(response.json())
         except Exception:
             return []
@@ -1500,167 +1626,155 @@ def fetch_warrant_market_data(force=False):
     return batches
 
 
+def _warrant_column_map(cols):
+    return {
+        "code": _pick_col(cols, ["權證", "代號"]) or _pick_col(cols, ["證券", "代號"]),
+        "name": _pick_col(cols, ["權證", "名稱"]) or _pick_col(cols, ["權證", "簡稱"]) or _pick_col(cols, ["證券", "名稱"]),
+        "issuer": (
+            _pick_col(cols, ["發行", "人"])
+            or _pick_col(cols, ["發行", "商"])
+            or _pick_col(cols, ["發行"])
+            or _pick_col(cols, ["券商"])
+        ),
+        "underlying": (
+            _pick_col(cols, ["標的", "證券", "代號"])
+            or _pick_col(cols, ["標的", "代號"])
+            or _pick_col(cols, ["標的", "股", "代號"])
+            or _pick_col(cols, ["連結", "代號"])
+            or _pick_col(cols, ["標的"])
+        ),
+        "strike": _pick_col(cols, ["履約", "價"]) or _pick_col(cols, ["行使", "價"]),
+        "expiry": _pick_col(cols, ["到期", "日期"]) or _pick_col(cols, ["到期日"]) or _pick_col(cols, ["到期"]),
+        "type": _pick_col(cols, ["認購"]) or _pick_col(cols, ["權證", "類型"]) or _pick_col(cols, ["權證", "種類"]),
+        "price": _pick_col(cols, ["收盤", "價"]) or _pick_col(cols, ["成交", "價"]) or _pick_col(cols, ["收盤"]),
+        "ratio": _pick_col(cols, ["行使", "比例"]) or _pick_col(cols, ["履約", "比例"]),
+        "days": _pick_col(cols, ["剩餘", "天"]) or _pick_col(cols, ["距到期", "天"]),
+    }
+
+
+def _records_to_warrant_rows(records, target_codes):
+    """向量化篩選權證，只掃描標的代號命中列。"""
+    if not records or not target_codes:
+        return {}
+
+    df = pd.DataFrame(records)
+    if df.empty:
+        return {}
+
+    df.columns = [clean_text(c) for c in df.columns]
+    cols = _warrant_column_map(list(df.columns))
+    today = datetime.now().date()
+    lookup = {code: [] for code in target_codes}
+
+    if cols["underlying"] and cols["underlying"] in df.columns:
+        df["_under"] = df[cols["underlying"]].astype(str).map(normalize_code)
+    else:
+        df["_under"] = ""
+
+    df = df[df["_under"].isin(target_codes)].copy()
+    if df.empty:
+        return lookup
+
+    if cols["expiry"] and cols["expiry"] in df.columns:
+        df["_expiry"] = df[cols["expiry"]].map(parse_date_any)
+    else:
+        df["_expiry"] = None
+
+    if cols["days"] and cols["days"] in df.columns:
+        df["_days"] = pd.to_numeric(df[cols["days"]], errors="coerce")
+    else:
+        df["_days"] = pd.NA
+
+    for idx, record in df.iterrows():
+        stock_code = record["_under"]
+        if stock_code not in lookup:
+            continue
+
+        days_left = record.get("_days")
+        if pd.isna(days_left):
+            expiry = record.get("_expiry")
+            days_left = (expiry - today).days if expiry else None
+        else:
+            days_left = int(days_left)
+
+        if days_left is None or days_left < WARRANT_MIN_DAYS or days_left > WARRANT_MAX_DAYS:
+            continue
+
+        wcode = clean_text(record.get(cols["code"], "")) if cols["code"] else ""
+        wname = clean_text(record.get(cols["name"], "")) if cols["name"] else ""
+        if not wcode and not wname:
+            continue
+
+        raw_type = clean_text(record.get(cols["type"], "")) if cols["type"] else wname
+        if "售" in raw_type:
+            wtype = "認售"
+        elif "購" in raw_type:
+            wtype = "認購"
+        else:
+            wtype = "認購/認售"
+
+        issuer = clean_text(record.get(cols["issuer"], "")) if cols["issuer"] else infer_issuer_from_warrant_name(wname)
+        strike = parse_number(record.get(cols["strike"], "")) if cols["strike"] else None
+        price_text = clean_text(record.get(cols["price"], "")) if cols["price"] else ""
+        ratio_text = clean_text(record.get(cols["ratio"], "")) if cols["ratio"] else ""
+
+        lookup[stock_code].append(
+            {
+                "code": wcode,
+                "stock_id": wcode,
+                "name": wname,
+                "type": wtype,
+                "issuer": issuer,
+                "broker": issuer,
+                "stock_code": stock_code,
+                "strike": strike if strike is not None else "",
+                "days_left": int(days_left),
+                "price": price_text,
+                "ratio": ratio_text,
+                "underlying_price": "",
+            }
+        )
+
+    for code, rows in lookup.items():
+        if not rows:
+            continue
+        deduped = pd.DataFrame(rows).drop_duplicates(subset=["code", "name"], keep="first")
+        lookup[code] = deduped.to_dict("records")
+    return lookup
+
+
 def _warrants_from_record_batches(record_batches, target_code, stock_price=None):
     target_code = normalize_code(target_code)
-    today = datetime.now().date()
-    rows = []
-
-    for records in record_batches:
-        if not records:
-            continue
-
-        df = pd.DataFrame(records)
-        if df.empty:
-            continue
-        df.columns = [clean_text(c) for c in df.columns]
-        cols = list(df.columns)
-        code_col = _pick_col(cols, ["權證", "代號"]) or _pick_col(cols, ["證券", "代號"])
-        name_col = _pick_col(cols, ["權證", "名稱"]) or _pick_col(cols, ["證券", "名稱"])
-        issuer_col = _pick_col(cols, ["發行"]) or _pick_col(cols, ["券商"])
-        underlying_col = _pick_col(cols, ["標的", "代號"]) or _pick_col(cols, ["標的"])
-        strike_col = _pick_col(cols, ["履約", "價"])
-        expiry_col = _pick_col(cols, ["到期"])
-        type_col = _pick_col(cols, ["認購"]) or _pick_col(cols, ["權證", "類型"])
-        price_col = _pick_col(cols, ["收盤"]) or _pick_col(cols, ["成交"])
-        ratio_col = _pick_col(cols, ["行使", "比例"])
-        days_col = _pick_col(cols, ["剩餘", "天"])
-
-        for _, record in df.iterrows():
-            row_text = " ".join(clean_text(v) for v in record.astype(str).tolist())
-            under = clean_text(record.get(underlying_col, "")) if underlying_col else ""
-            if target_code not in under and target_code not in row_text:
-                continue
-
-            wcode = clean_text(record.get(code_col, "")) if code_col else ""
-            wname = clean_text(record.get(name_col, "")) if name_col else ""
-            if not wcode and not wname:
-                continue
-
-            expiry = parse_date_any(record.get(expiry_col, "")) if expiry_col else None
-            days_left = (expiry - today).days if expiry else None
-            if days_col:
-                dval = parse_number(record.get(days_col, ""), is_int=True)
-                if dval is not None:
-                    days_left = dval
-
-            if days_left is None or days_left < WARRANT_MIN_DAYS or days_left > WARRANT_MAX_DAYS:
-                continue
-
-            strike = parse_number(record.get(strike_col, "")) if strike_col else None
-            raw_type = clean_text(record.get(type_col, "")) if type_col else wname
-            if "售" in raw_type:
-                wtype = "認售"
-            elif "購" in raw_type:
-                wtype = "認購"
-            else:
-                wtype = "認購/認售"
-
-            issuer = clean_text(record.get(issuer_col, "")) if issuer_col else infer_issuer_from_warrant_name(wname)
-            price_text = clean_text(record.get(price_col, "")) if price_col else ""
-            ratio_text = clean_text(record.get(ratio_col, "")) if ratio_col else ""
-
-            rows.append(
-                {
-                    "code": wcode,
-                    "stock_id": wcode,
-                    "name": wname,
-                    "type": wtype,
-                    "issuer": issuer,
-                    "broker": issuer,
-                    "stock_code": target_code,
-                    "strike": strike if strike is not None else "",
-                    "days_left": int(days_left),
-                    "price": price_text,
-                    "ratio": ratio_text,
-                    "underlying_price": stock_price if stock_price is not None else "",
-                }
-            )
-
-    if not rows:
-        return []
-    out_df = pd.DataFrame(rows).drop_duplicates(subset=["code", "name"], keep="first")
-    return out_df.to_dict("records")
+    lookup = _records_to_warrant_rows(
+        [row for batch in record_batches for row in (batch or [])],
+        {target_code},
+    )
+    rows = lookup.get(target_code, [])
+    if stock_price is not None:
+        for item in rows:
+            item["underlying_price"] = stock_price
+    return rows
 
 
 def _build_warrant_lookup(record_batches, target_codes):
-    """一次掃描全市場權證資料，依標的代號分組（避免每檔重複 iterrows）。"""
+    """一次掃描全市場權證資料，依標的代號分組（向量化，避免全表 iterrows）。"""
     target_codes = {normalize_code(c) for c in target_codes if c}
     lookup = {code: [] for code in target_codes}
     if not target_codes or not record_batches:
         return lookup
 
-    today = datetime.now().date()
+    merged = {}
     for records in record_batches:
         if not records:
             continue
-        df = pd.DataFrame(records)
-        if df.empty:
-            continue
-        df.columns = [clean_text(c) for c in df.columns]
-        cols = list(df.columns)
-        code_col = _pick_col(cols, ["權證", "代號"]) or _pick_col(cols, ["證券", "代號"])
-        name_col = _pick_col(cols, ["權證", "名稱"]) or _pick_col(cols, ["證券", "名稱"])
-        issuer_col = _pick_col(cols, ["發行"]) or _pick_col(cols, ["券商"])
-        underlying_col = _pick_col(cols, ["標的", "代號"]) or _pick_col(cols, ["標的"])
-        strike_col = _pick_col(cols, ["履約", "價"])
-        expiry_col = _pick_col(cols, ["到期"])
-        type_col = _pick_col(cols, ["認購"]) or _pick_col(cols, ["權證", "類型"])
-        price_col = _pick_col(cols, ["收盤"]) or _pick_col(cols, ["成交"])
-        ratio_col = _pick_col(cols, ["行使", "比例"])
-        days_col = _pick_col(cols, ["剩餘", "天"])
-
-        for _, record in df.iterrows():
-            row_text = " ".join(clean_text(v) for v in record.astype(str).tolist())
-            under = clean_text(record.get(underlying_col, "")) if underlying_col else ""
-            matched = [c for c in target_codes if c in under or c in row_text]
-            if not matched:
+        batch_lookup = _records_to_warrant_rows(records, target_codes)
+        for code, rows in batch_lookup.items():
+            if not rows:
                 continue
+            merged.setdefault(code, []).extend(rows)
 
-            wcode = clean_text(record.get(code_col, "")) if code_col else ""
-            wname = clean_text(record.get(name_col, "")) if name_col else ""
-            if not wcode and not wname:
-                continue
-
-            expiry = parse_date_any(record.get(expiry_col, "")) if expiry_col else None
-            days_left = (expiry - today).days if expiry else None
-            if days_col:
-                dval = parse_number(record.get(days_col, ""), is_int=True)
-                if dval is not None:
-                    days_left = dval
-            if days_left is None or days_left < WARRANT_MIN_DAYS or days_left > WARRANT_MAX_DAYS:
-                continue
-
-            strike = parse_number(record.get(strike_col, "")) if strike_col else None
-            raw_type = clean_text(record.get(type_col, "")) if type_col else wname
-            if "售" in raw_type:
-                wtype = "認售"
-            elif "購" in raw_type:
-                wtype = "認購"
-            else:
-                wtype = "認購/認售"
-            issuer = clean_text(record.get(issuer_col, "")) if issuer_col else infer_issuer_from_warrant_name(wname)
-            price_text = clean_text(record.get(price_col, "")) if price_col else ""
-            ratio_text = clean_text(record.get(ratio_col, "")) if ratio_col else ""
-
-            for stock_code in matched:
-                lookup[stock_code].append(
-                    {
-                        "code": wcode,
-                        "stock_id": wcode,
-                        "name": wname,
-                        "type": wtype,
-                        "issuer": issuer,
-                        "broker": issuer,
-                        "stock_code": stock_code,
-                        "strike": strike if strike is not None else "",
-                        "days_left": int(days_left),
-                        "price": price_text,
-                        "ratio": ratio_text,
-                        "underlying_price": "",
-                    }
-                )
-
-    for code, rows in lookup.items():
+    for code in target_codes:
+        rows = merged.get(code) or []
         if not rows:
             continue
         deduped = pd.DataFrame(rows).drop_duplicates(subset=["code", "name"], keep="first")
@@ -1693,7 +1807,7 @@ def build_warrants_from_bullish(bullish_items):
                 continue
             seen.add(key)
             warrants.append(item)
-            if len(warrants) >= MAX_RESULTS:
+            if len(warrants) >= MAX_WARRANT_RESULTS:
                 return warrants
     return warrants
 
@@ -1735,8 +1849,8 @@ def run_web_strategy_analysis(include_warrants=True):
 
     bearish_pool = build_bearish_pool(weekly_ma_df, master_df)
 
-    bullish_display = build_client_bullish_view(training_pool).head(MAX_RESULTS)
-    bearish_display = build_client_bearish_view(bearish_pool).head(MAX_RESULTS)
+    bullish_display = build_client_bullish_view(training_pool)
+    bearish_display = build_client_bearish_view(bearish_pool)
     bullish_items = pool_to_api_items(bullish_display, score_col="StrongScore")
     bearish_items = pool_to_api_items(bearish_display, score_col="BearishScore")
 

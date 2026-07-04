@@ -18,7 +18,8 @@ from web_analysis_store import load_web_analysis_result, save_web_analysis_resul
 logger = logging.getLogger("zhu.analysis")
 TW = ZoneInfo("Asia/Taipei")
 
-STALE_RUNNING_MINUTES = 20
+STALE_RUNNING_MINUTES = 10
+WARRANT_PHASE_TIMEOUT_SEC = 90
 
 _scheduler: BackgroundScheduler | None = None
 _job_lock = threading.Lock()
@@ -88,37 +89,46 @@ def is_job_running() -> bool:
 
 def recover_stale_running_job(meta: dict | None = None) -> dict:
     """若 running 超過時限，視為 Render 逾時中斷並重置，避免永遠卡住。"""
+    global _job_running
+
     meta = dict(meta or load_web_analysis_result() or {})
     if meta.get("job_status") != "running":
         return meta
-
-    # 執行緒仍在跑 → 不要誤判逾時
-    if _job_running:
-        return get_running_progress(meta)
 
     started = _parse_job_started_at(meta)
     if started is None:
         meta = _set_job_meta(meta, "failed", "分析中斷（可重新啟動）")
         save_web_analysis_result(meta)
+        _job_running = False
         return meta
 
     elapsed_min = (tw_now() - started).total_seconds() / 60.0
     meta["job_elapsed_sec"] = int(elapsed_min * 60)
+
+    # 執行緒仍在跑但已超過時限 → 強制解鎖，保留已算出的清單
     if elapsed_min >= STALE_RUNNING_MINUTES:
-        # 若已有分析結果，只標記工作失敗，不清空資料
-        if meta.get("updated_at") and (meta.get("bullish_count") or meta.get("bearish_count")):
+        has_data = bool(
+            meta.get("updated_at")
+            and (meta.get("bullish_count") or meta.get("bearish_count"))
+        )
+        if has_data:
             meta["job_status"] = "idle"
             meta["job_error"] = ""
             meta["job_message"] = "分析完成"
             meta["job_progress"] = 100
-            save_web_analysis_result(meta)
-            return meta
-        meta = _set_job_meta(
-            meta,
-            "failed",
-            f"分析逾時（>{STALE_RUNNING_MINUTES} 分鐘），請重新啟動",
-        )
+        else:
+            meta = _set_job_meta(
+                meta,
+                "failed",
+                f"分析逾時（>{STALE_RUNNING_MINUTES} 分鐘），請重新啟動",
+            )
         save_web_analysis_result(meta)
+        _job_running = False
+        return meta
+
+    if _job_running:
+        return get_running_progress(meta)
+
     return meta
 
 
@@ -166,6 +176,21 @@ def _notify_analysis_complete(result: dict) -> None:
             logger.exception("[analysis] callback failed")
 
 
+def _run_warrants_with_timeout(warrant_items):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(build_warrants_from_bullish, warrant_items)
+        try:
+            return future.result(timeout=WARRANT_PHASE_TIMEOUT_SEC)
+        except FuturesTimeout:
+            logger.warning("[analysis] warrant phase timeout after %ss", WARRANT_PHASE_TIMEOUT_SEC)
+            return []
+        except Exception:
+            logger.exception("[analysis] warrant phase failed")
+            return []
+
+
 def run_analysis_and_persist(trigger: str = "manual") -> dict:
     global _job_running
 
@@ -192,16 +217,17 @@ def run_analysis_and_persist(trigger: str = "manual") -> dict:
         result["warrant_count"] = len(result["warrants"])
 
         mid = _set_job_meta(result, "running")
-        mid["job_progress"] = 88
+        mid["job_progress"] = 92
         mid["job_message"] = "正在整理權證清單…"
         save_web_analysis_result(mid)
         _notify_analysis_complete(mid)
 
-        warrants = build_warrants_from_bullish(warrant_items)
+        warrants = _run_warrants_with_timeout(warrant_items)
         result["warrants"] = warrants
         result["warrant_count"] = len(warrants)
 
         result = _set_job_meta(result, "idle")
+        result["job_message"] = "分析完成"
         save_web_analysis_result(result)
         _notify_analysis_complete(result)
         logger.info(
