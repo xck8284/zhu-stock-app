@@ -38,6 +38,7 @@ def save_web_analysis_result(result: dict) -> dict:
                 "job_progress": result.get("job_progress", 0),
                 "job_message": result.get("job_message", ""),
                 "job_elapsed_sec": result.get("job_elapsed_sec", 0),
+                "data_stats": result.get("data_stats") or {},
             },
         }
 
@@ -93,6 +94,7 @@ def load_web_analysis_result() -> dict | None:
             "job_progress": meta.get("job_progress", 0),
             "job_message": meta.get("job_message", ""),
             "job_elapsed_sec": meta.get("job_elapsed_sec", 0),
+            "data_stats": meta.get("data_stats") or {},
         }
     except Exception:
         return None

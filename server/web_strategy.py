@@ -58,10 +58,9 @@ WARRANT_MAX_DAYS = 120
 
 MAX_WARRANT_RESULTS = 100
 MAX_WARRANT_STOCKS = 12
-# 週K 20MA + 趨勢線；有 DB 日資料快取後，日常更新可壓到 ~1 分鐘
-MIN_TRADING_DAYS_TARGET = 130
-HISTORY_CALENDAR_DAYS = 200
-FETCH_WORKERS = 24
+# 對齊桌面版：history_end - 460 天，約 60 週（LOOKBACK_WEEKS=60）
+HISTORY_CALENDAR_DAYS = 480
+FETCH_WORKERS = 32
 HTTP_TIMEOUT = 12
 
 # 權證專用（桌面版 build_warrant_fastscan 同款）
@@ -1523,44 +1522,63 @@ def fetch_tpex_daily_all(date_obj):
     return None
 
 
-def collect_daily_history(max_calendar_days=HISTORY_CALENDAR_DAYS):
-    """並行抓取上市/上櫃日資料；已快取日期直接讀 DB，日常更新只需抓最新 1～2 天。"""
+def collect_daily_history(history_calendar_days=HISTORY_CALENDAR_DAYS):
+    """並行抓取上市/上櫃日資料（對齊桌面版 ~460 天）；有 DB 快取後日常只補最新 1～2 天。"""
     from web_daily_cache import fetch_market_day_cached
 
-    cursor = datetime.now()
-    attempts = 0
-    dates = []
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=history_calendar_days)
 
-    while attempts < max_calendar_days and len(dates) < MIN_TRADING_DAYS_TARGET:
-        if cursor.weekday() < 5:
-            dates.append(cursor.date())
-        cursor -= timedelta(days=1)
-        attempts += 1
+    dates = []
+    cur = start_date
+    while cur <= end_date:
+        if cur.weekday() < 5:
+            dates.append(cur)
+        cur += timedelta(days=1)
 
     if not dates:
         return pd.DataFrame()
 
-    tasks = []
-    for day in dates:
+    def _fetch_one(day, market, fetch_fn):
         trade_date = day.strftime("%Y-%m-%d")
-        tasks.append((trade_date, "上市", fetch_twse_daily_all))
-        tasks.append((trade_date, "上櫃", fetch_tpex_daily_all))
+        try:
+            df = fetch_market_day_cached(trade_date, market, fetch_fn)
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                return df
+        except Exception:
+            return None
+        return None
 
+    listed_tasks = [(d, "上市", fetch_twse_daily_all) for d in dates]
+    otc_tasks = [(d, "上櫃", fetch_tpex_daily_all) for d in dates]
     frames = []
-    workers = min(FETCH_WORKERS, max(1, len(tasks)))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(fetch_market_day_cached, td, market, fn) for td, market, fn in tasks]
-        for future in as_completed(futures):
-            try:
-                df = future.result()
-                if isinstance(df, pd.DataFrame) and not df.empty:
-                    frames.append(df)
-            except Exception:
-                continue
+
+    def _run_market_tasks(tasks, workers):
+        batch_frames = []
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_fetch_one, d, market, fn) for d, market, fn in tasks]
+            for future in as_completed(futures):
+                try:
+                    df = future.result()
+                    if isinstance(df, pd.DataFrame) and not df.empty:
+                        batch_frames.append(df)
+                except Exception:
+                    continue
+        return batch_frames
+
+    with ThreadPoolExecutor(max_workers=2) as outer:
+        listed_future = outer.submit(_run_market_tasks, listed_tasks, 16)
+        otc_future = outer.submit(_run_market_tasks, otc_tasks, 24)
+        frames.extend(listed_future.result())
+        frames.extend(otc_future.result())
 
     if not frames:
         return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
+
+    out = pd.concat(frames, ignore_index=True)
+    out["日期"] = pd.to_datetime(out["日期"], errors="coerce")
+    out = out.sort_values(["日期", "股票代號"]).reset_index(drop=True)
+    return out
 
 
 def _pick_col(cols, keywords):
@@ -1865,6 +1883,16 @@ def run_web_strategy_analysis(include_warrants=True):
         except Exception:
             settle_date = ""
 
+    listed_n = 0
+    otc_n = 0
+    history_days = 0
+    try:
+        listed_n = int(daily_all.loc[daily_all["市場別"].astype(str).eq("上市"), "股票代號"].nunique())
+        otc_n = int(daily_all.loc[daily_all["市場別"].astype(str).eq("上櫃"), "股票代號"].nunique())
+        history_days = int(daily_all["日期"].nunique())
+    except Exception:
+        pass
+
     return {
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "settle_date": settle_date,
@@ -1880,6 +1908,13 @@ def run_web_strategy_analysis(include_warrants=True):
         "otc_supplement_count": len(otc_supplement) if isinstance(otc_supplement, pd.DataFrame) else 0,
         "warrant_candidate_count": len(warrant_pool),
         "_warrant_items": warrant_items,
+        "data_stats": {
+            "history_calendar_days": HISTORY_CALENDAR_DAYS,
+            "history_trading_days": history_days,
+            "listed_stocks": listed_n,
+            "otc_stocks": otc_n,
+            "daily_rows": len(daily_all),
+        },
         "strategy": {
             "bullish": "CLIENT_BULLISH：training pool + 上櫃補強 + mix 排序（同桌面版）",
             "bearish": "CLIENT_BEARISH：空方 training pool + 星等排序（同桌面版）",

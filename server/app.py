@@ -1496,6 +1496,7 @@ def _apply_web_analysis_result(result):
         "job_progress": result.get("job_progress", 0),
         "job_message": result.get("job_message", ""),
         "job_elapsed_sec": result.get("job_elapsed_sec", 0),
+        "data_stats": result.get("data_stats") or {},
         "auto_refresh": "weekday 16:05 Asia/Taipei",
     }
     return WEB_ANALYSIS_META

@@ -142,8 +142,8 @@ def get_running_progress(meta: dict | None = None) -> dict:
     if started is not None:
         elapsed_sec = max(0, int((tw_now() - started).total_seconds()))
 
-    # 有 DB 快取後日常約 1 分鐘；首次建立快取較久
-    estimated_total = 90
+    # 有 DB 快取後日常約 1 分鐘；首次建立 480 天快取較久
+    estimated_total = 600 if (load_web_analysis_result() or {}).get("data_stats", {}).get("history_trading_days", 0) < 200 else 120
     progress = min(97, max(5, int(elapsed_sec / estimated_total * 100)))
     if elapsed_sec < 25:
         message = "正在抓取台股歷史資料…"
@@ -216,11 +216,15 @@ def run_analysis_and_persist(trigger: str = "manual") -> dict:
         result["warrants"] = prev.get("warrants") or []
         result["warrant_count"] = len(result["warrants"])
 
-        mid = _set_job_meta(result, "running")
-        mid["job_progress"] = 92
-        mid["job_message"] = "正在整理權證清單…"
-        save_web_analysis_result(mid)
-        _notify_analysis_complete(mid)
+        # 先看多/看空：策略算完立刻存檔，避免權證階段拖垮整體
+        ready = _set_job_meta(result, "idle")
+        ready["job_message"] = "看多/看空已完成，正在整理權證…"
+        ready["job_progress"] = 100
+        save_web_analysis_result(ready)
+        _notify_analysis_complete(ready)
+
+        with _job_lock:
+            _job_running = False
 
         warrants = _run_warrants_with_timeout(warrant_items)
         result["warrants"] = warrants
