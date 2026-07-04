@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     BREVO_API_KEY: str = ""
     BREVO_FROM_EMAIL: str = ""
 
+    # 網頁版自動分析：台北時間週一至週五 16:05（收盤資料穩定後）
+    AUTO_ANALYSIS_HOUR: int = 16
+    AUTO_ANALYSIS_MINUTE: int = 5
+    CRON_SECRET: str = ""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

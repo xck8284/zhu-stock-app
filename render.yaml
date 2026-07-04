@@ -1,0 +1,26 @@
+# Render 部署設定（Blueprint）
+# 主服務：Web Service（FastAPI）
+# 排程：Cron Job 於 UTC 08:05 = 台北時間週一至週五 16:05 觸發收盤後分析
+
+services:
+  - type: web
+    name: zhu-stock-app
+    runtime: python
+    rootDir: server
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: CRON_SECRET
+        generateValue: true
+      - key: AUTO_ANALYSIS_HOUR
+        value: "16"
+      - key: AUTO_ANALYSIS_MINUTE
+        value: "5"
+
+  - type: cron
+    name: zhu-stock-daily-analysis
+    runtime: image
+    schedule: "5 8 * * 1-5"
+    dockerCommand: |
+      curl -fsS -X POST "https://zhu-stock-app.onrender.com/web/cron/daily-analysis" \
+        -H "X-Cron-Secret: ${CRON_SECRET}"

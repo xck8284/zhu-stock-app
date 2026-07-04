@@ -76,6 +76,18 @@ class PaymentReport(Base):
     created_at = Column(DateTime, default=now_utc)
 
 
+class WebAnalysisSnapshot(Base):
+    __tablename__ = "web_analysis_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    bullish_json = Column(Text, nullable=False, default="[]")
+    bearish_json = Column(Text, nullable=False, default="[]")
+    warrants_json = Column(Text, nullable=False, default="[]")
+    meta_json = Column(Text, nullable=False, default="{}")
+    settle_date = Column(String(20), nullable=True, default="")
+    updated_at = Column(DateTime, default=now_utc)
+
+
 class AbuseLog(Base):
     __tablename__ = "abuse_logs"
 

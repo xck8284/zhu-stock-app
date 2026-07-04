@@ -10,4 +10,5 @@ PyJWT
 sib-api-v3-sdk
 requests
 pandas
+APScheduler
 psycopg2-binary

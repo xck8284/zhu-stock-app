@@ -1359,6 +1359,7 @@ def run_web_strategy_analysis():
     if daily_all.empty:
         return {
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "settle_date": "",
             "source": "web-strategy",
             "market": "上市+上櫃（週K策略）",
             "bullish": [],
@@ -1387,8 +1388,16 @@ def run_web_strategy_analysis():
     bearish_items = pool_to_api_items(bearish_pool.head(MAX_RESULTS), score_col="BearishScore")
     warrants = build_warrants_from_bullish(bullish_items)
 
+    settle_date = ""
+    if "日期" in daily_all.columns:
+        try:
+            settle_date = pd.to_datetime(daily_all["日期"]).max().strftime("%Y-%m-%d")
+        except Exception:
+            settle_date = ""
+
     return {
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "settle_date": settle_date,
         "source": "web-strategy-weekly",
         "market": "上市+上櫃（週K｜StrongScore≥100｜5星｜週量≥1萬｜趨勢突破）",
         "bullish": bullish_items,

@@ -2,8 +2,10 @@ import certifi
 import requests
 import os
 import smtplib
+import logging
 from email.mime.text import MIMEText
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 import random
 import re
@@ -19,7 +21,7 @@ from sib_api_v3_sdk.rest import ApiException
 
 from config import settings
 from database import SessionLocal, engine, Base
-from models import User, AbuseLog, VerificationCode, PaymentReport
+from models import User, AbuseLog, VerificationCode, PaymentReport, WebAnalysisSnapshot
 from schemas import (
     MessageResponse,
     SendRegisterCodeRequest, VerifyRegisterCodeRequest,
@@ -31,7 +33,30 @@ from security import hash_password, verify_password, create_access_token, decode
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="ZHU STOCK PLATFORM - COMPLETE UPGRADE", version="2.0.0")
+logger = logging.getLogger("zhu.app")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    from analysis_scheduler import maybe_refresh_on_startup, start_analysis_scheduler, stop_analysis_scheduler
+    from web_analysis_store import load_web_analysis_result
+
+    cached = load_web_analysis_result()
+    if cached:
+        _apply_web_analysis_result(cached)
+        logger.info(
+            "loaded web analysis cache settle=%s updated=%s",
+            cached.get("settle_date"),
+            cached.get("updated_at"),
+        )
+
+    start_analysis_scheduler()
+    maybe_refresh_on_startup()
+    yield
+    stop_analysis_scheduler()
+
+
+app = FastAPI(title="ZHU STOCK PLATFORM - COMPLETE UPGRADE", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -1236,28 +1261,96 @@ def approve_payment(
         "message": "已完成審核與開通"
     }
 
-@app.get("/stocks/bullish")
-def get_bullish_stocks():
-    return {
-        "items":[
-            {
-                "stock_id":"2330",
-                "name":"台積電",
-                "stars":"★★★★★",
-                "strong_score":128,
-                "bias":"12%"
-            },
-            {
-                "stock_id":"3017",
-                "name":"奇鋐",
-                "stars":"★★★★☆",
-                "strong_score":115,
-                "bias":"18%"
-            }
-        ]
-    }
+FALLBACK_BULLISH = [
+    {
+        "stock_id": "2330",
+        "name": "台積電",
+        "stars": "★★★★★",
+        "strong_score": 128,
+        "bias": "12%",
+    },
+    {
+        "stock_id": "3017",
+        "name": "奇鋐",
+        "stars": "★★★★☆",
+        "strong_score": 115,
+        "bias": "18%",
+    },
+]
 
 BULLISH_DATA = []
+BEARISH_DATA = []
+WARRANT_DATA = []
+
+WEB_BULLISH_DATA = []
+WEB_BEARISH_DATA = []
+WEB_WARRANT_DATA = []
+WEB_ANALYSIS_META = {"updated_at": "", "source": "web"}
+
+
+def _format_bias(value):
+    if value is None or value == "":
+        return ""
+    text = str(value)
+    return text if "%" in text else f"{text}%"
+
+
+def _normalize_stock_items(items):
+    normalized = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        stock_id = str(item.get("stock_id") or item.get("code") or item.get("symbol") or "").strip()
+        if not stock_id:
+            continue
+        normalized.append({
+            "stock_id": stock_id,
+            "name": str(item.get("name") or "").strip(),
+            "stars": str(item.get("stars") or item.get("star") or "").strip(),
+            "strong_score": item.get("strong_score", item.get("score", 0)),
+            "bias": _format_bias(item.get("bias")),
+        })
+    return normalized
+
+
+def _normalize_warrant_items(items):
+    normalized = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or item.get("stock_id") or "").strip()
+        if not code:
+            continue
+        normalized.append({
+            "stock_id": code,
+            "code": code,
+            "name": str(item.get("name") or "").strip(),
+            "type": str(item.get("type") or "").strip(),
+            "issuer": str(item.get("issuer") or item.get("broker") or "").strip(),
+            "broker": str(item.get("issuer") or item.get("broker") or "").strip(),
+            "strike": item.get("strike", ""),
+            "price": item.get("price_text") or item.get("price", ""),
+        })
+    return normalized
+
+
+@app.post("/admin/upload-stock-results")
+def upload_stock_results(data: dict):
+    global BULLISH_DATA, BEARISH_DATA, WARRANT_DATA
+
+    BULLISH_DATA = _normalize_stock_items(data.get("bullish", []))
+    BEARISH_DATA = _normalize_stock_items(data.get("bearish", []))
+    WARRANT_DATA = _normalize_warrant_items(data.get("warrants", []))
+
+    return {
+        "success": True,
+        "bullish_count": len(BULLISH_DATA),
+        "bearish_count": len(BEARISH_DATA),
+        "warrant_count": len(WARRANT_DATA),
+        "updated_at": data.get("updated_at", ""),
+        "settle_date": data.get("settle_date", ""),
+    }
+
 
 @app.post("/upload/bullish")
 def upload_bullish(data: dict):
@@ -1274,15 +1367,131 @@ def upload_bullish(data: dict):
 
 @app.get("/stocks/bullish")
 def get_bullish_stocks():
-
     return {
-        "items": BULLISH_DATA
+        "items": BULLISH_DATA if BULLISH_DATA else FALLBACK_BULLISH
     }
 
-from analysis import run_analysis
+from analysis_scheduler import run_analysis_and_persist, run_analysis_in_background
+
+
+def _apply_web_analysis_result(result):
+    global WEB_BULLISH_DATA, WEB_BEARISH_DATA, WEB_WARRANT_DATA, WEB_ANALYSIS_META
+
+    WEB_BULLISH_DATA = _normalize_stock_items(result.get("bullish", []))
+    WEB_BEARISH_DATA = _normalize_stock_items(result.get("bearish", []))
+    WEB_WARRANT_DATA = _normalize_warrant_items(result.get("warrants", []))
+    WEB_ANALYSIS_META = {
+        "updated_at": result.get("updated_at", ""),
+        "settle_date": result.get("settle_date", ""),
+        "source": result.get("source", "web-strategy"),
+        "market": result.get("market", ""),
+        "bullish_count": len(WEB_BULLISH_DATA),
+        "bearish_count": len(WEB_BEARISH_DATA),
+        "warrant_count": len(WEB_WARRANT_DATA),
+        "job_status": result.get("job_status", "idle"),
+        "job_error": result.get("job_error", ""),
+        "auto_refresh": "weekday 16:05 Asia/Taipei",
+    }
+    return WEB_ANALYSIS_META
+
+
+def _verify_cron_secret(x_cron_secret: Optional[str]) -> None:
+    expected = (settings.CRON_SECRET or "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="CRON_SECRET 未設定，無法觸發自動分析")
+    if (x_cron_secret or "").strip() != expected:
+        raise HTTPException(status_code=403, detail="排程密鑰錯誤")
+
+
+@app.get("/web/analysis-status")
+def web_analysis_status(
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    _ = get_current_user(authorization, db)
+    return {
+        "success": True,
+        **WEB_ANALYSIS_META,
+        "has_data": bool(WEB_BULLISH_DATA or WEB_BEARISH_DATA or WEB_WARRANT_DATA),
+    }
+
+
+@app.post("/web/cron/daily-analysis")
+def web_cron_daily_analysis(
+    x_cron_secret: Optional[str] = Header(default=None, alias="X-Cron-Secret"),
+):
+    """Render Cron / 外部排程用。非同步執行，避免 HTTP timeout。"""
+    _verify_cron_secret(x_cron_secret)
+    started = run_analysis_in_background(trigger="cron-http")
+    return {
+        "success": True,
+        "started": started,
+        "message": "已開始背景分析" if started else "分析已在進行中",
+        **WEB_ANALYSIS_META,
+    }
+
+
+@app.post("/web/run-analysis")
+@app.get("/web/run-analysis")
+def web_run_analysis(
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    user = get_current_user(authorization, db)
+
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="帳號已停用")
+
+    if WEB_ANALYSIS_META.get("job_status") == "running":
+        return {
+            "success": True,
+            "message": "分析進行中，請稍後再查看",
+            **WEB_ANALYSIS_META,
+        }
+
+    try:
+        result = run_analysis_and_persist(trigger="manual")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"分析失敗：{exc}") from exc
+
+    meta = _apply_web_analysis_result(result)
+
+    return {
+        "success": True,
+        "message": "網頁版分析完成",
+        **meta,
+    }
+
+
+@app.get("/web/bullish")
+def web_get_bullish(
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    _ = get_current_user(authorization, db)
+    return {"items": WEB_BULLISH_DATA}
+
+
+@app.get("/web/bearish")
+def web_get_bearish(
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    _ = get_current_user(authorization, db)
+    return {"items": WEB_BEARISH_DATA}
+
+
+@app.get("/web/warrants")
+def web_get_warrants(
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    _ = get_current_user(authorization, db)
+    return {"items": WEB_WARRANT_DATA}
+
 
 @app.get("/run-analysis")
-def run_analysis():
+def run_analysis_legacy():
 
     global BULLISH_DATA
 
@@ -1323,7 +1532,12 @@ def get_bullish():
         "items": BULLISH_DATA
     }
 
-BEARISH_DATA = []
+@app.get("/stocks/bearish")
+def get_bearish_stocks():
+    return {
+        "items": BEARISH_DATA
+    }
+
 
 @app.get("/run-bearish-analysis")
 def run_bearish_analysis():
@@ -1366,8 +1580,6 @@ def get_bearish():
     return {
         "items": BEARISH_DATA
     }
-
-WARRANT_DATA = []
 
 @app.get("/run-warrant-analysis")
 def run_warrant_analysis():
