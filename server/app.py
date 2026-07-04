@@ -22,7 +22,7 @@ from sib_api_v3_sdk.rest import ApiException
 
 from config import settings
 from database import SessionLocal, engine, Base
-from models import User, AbuseLog, VerificationCode, PaymentReport, WebAnalysisSnapshot, FeedbackReport
+from models import User, AbuseLog, VerificationCode, PaymentReport, WebAnalysisSnapshot, FeedbackReport, DailyMarketCache
 from schemas import (
     MessageResponse,
     SendRegisterCodeRequest, VerifyRegisterCodeRequest,

@@ -88,6 +88,16 @@ class WebAnalysisSnapshot(Base):
     updated_at = Column(DateTime, default=now_utc)
 
 
+class DailyMarketCache(Base):
+    __tablename__ = "daily_market_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    trade_date = Column(String(10), index=True, nullable=False)
+    market = Column(String(10), index=True, nullable=False)
+    data_json = Column(Text, nullable=False, default="[]")
+    updated_at = Column(DateTime, default=now_utc)
+
+
 class AbuseLog(Base):
     __tablename__ = "abuse_logs"
 

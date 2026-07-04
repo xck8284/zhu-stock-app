@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from analysis import run_analysis
+from web_strategy import build_warrants_from_bullish, run_web_strategy_analysis
 from config import settings
 from web_analysis_store import load_web_analysis_result, save_web_analysis_result
 
@@ -132,14 +132,14 @@ def get_running_progress(meta: dict | None = None) -> dict:
     if started is not None:
         elapsed_sec = max(0, int((tw_now() - started).total_seconds()))
 
-    # 完整分析約 2～4 分鐘（並行抓資料 + 權證只下載一次）
-    estimated_total = 4 * 60
-    progress = min(98, max(5, int(elapsed_sec / estimated_total * 100)))
-    if elapsed_sec < 40:
+    # 有 DB 快取後日常約 1 分鐘；首次建立快取較久
+    estimated_total = 90
+    progress = min(97, max(5, int(elapsed_sec / estimated_total * 100)))
+    if elapsed_sec < 25:
         message = "正在抓取台股歷史資料…"
-    elif elapsed_sec < 120:
+    elif elapsed_sec < 50:
         message = "正在計算週K 與趨勢線…"
-    elif elapsed_sec < 180:
+    elif elapsed_sec < 70:
         message = "正在套用策略篩選…"
     else:
         message = "正在整理權證清單…"
@@ -184,7 +184,23 @@ def run_analysis_and_persist(trigger: str = "manual") -> dict:
         save_web_analysis_result(running_meta)
         _notify_analysis_complete(running_meta)
 
-        result = run_analysis()
+        result = run_web_strategy_analysis(include_warrants=False)
+        warrant_items = result.pop("_warrant_items", [])
+
+        prev = load_web_analysis_result() or {}
+        result["warrants"] = prev.get("warrants") or []
+        result["warrant_count"] = len(result["warrants"])
+
+        mid = _set_job_meta(result, "running")
+        mid["job_progress"] = 88
+        mid["job_message"] = "正在整理權證清單…"
+        save_web_analysis_result(mid)
+        _notify_analysis_complete(mid)
+
+        warrants = build_warrants_from_bullish(warrant_items)
+        result["warrants"] = warrants
+        result["warrant_count"] = len(warrants)
+
         result = _set_job_meta(result, "idle")
         save_web_analysis_result(result)
         _notify_analysis_complete(result)

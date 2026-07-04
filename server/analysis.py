@@ -5,4 +5,4 @@ from web_strategy import run_web_strategy_analysis
 
 
 def run_analysis():
-    return run_web_strategy_analysis()
+    return run_web_strategy_analysis(include_warrants=True)

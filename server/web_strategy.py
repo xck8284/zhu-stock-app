@@ -27,7 +27,8 @@ SESSION.headers.update(
 )
 
 
-def _http_get(url, params=None, timeout=20):
+def _http_get(url, params=None, timeout=None):
+    timeout = HTTP_TIMEOUT if timeout is None else timeout
     return requests.get(url, params=params, timeout=timeout, headers=SESSION.headers)
 
 # --- 策略常數（對齊桌面版） ---
@@ -56,10 +57,11 @@ WARRANT_MAX_DAYS = 120
 
 MAX_RESULTS = 100
 MAX_WARRANT_STOCKS = 8
-# 週K 20MA + 趨勢線需約 24 週以上；並行抓取仍可在 2～3 分鐘內完成
-MIN_TRADING_DAYS_TARGET = 165
-HISTORY_CALENDAR_DAYS = 240
-FETCH_WORKERS = 12
+# 週K 20MA + 趨勢線；有 DB 日資料快取後，日常更新可壓到 ~1 分鐘
+MIN_TRADING_DAYS_TARGET = 130
+HISTORY_CALENDAR_DAYS = 200
+FETCH_WORKERS = 20
+HTTP_TIMEOUT = 12
 
 # 權證專用（桌面版 build_warrant_fastscan 同款）
 WARRANT_MIN_SCORE = 100
@@ -1397,7 +1399,9 @@ def fetch_tpex_daily_all(date_obj):
 
 
 def collect_daily_history(max_calendar_days=HISTORY_CALENDAR_DAYS):
-    """並行抓取上市/上櫃日資料（策略明確，瓶頸在資料下載而非運算）。"""
+    """並行抓取上市/上櫃日資料；已快取日期直接讀 DB，日常更新只需抓最新 1～2 天。"""
+    from web_daily_cache import fetch_market_day_cached
+
     cursor = datetime.now()
     attempts = 0
     dates = []
@@ -1411,24 +1415,21 @@ def collect_daily_history(max_calendar_days=HISTORY_CALENDAR_DAYS):
     if not dates:
         return pd.DataFrame()
 
-    def _fetch_one(day):
-        day_obj = datetime.combine(day, datetime.min.time())
-        parts = []
-        twse = fetch_twse_daily_all(day_obj)
-        if isinstance(twse, pd.DataFrame) and not twse.empty:
-            parts.append(twse)
-        tpex = fetch_tpex_daily_all(day_obj)
-        if isinstance(tpex, pd.DataFrame) and not tpex.empty:
-            parts.append(tpex)
-        return parts
+    tasks = []
+    for day in dates:
+        trade_date = day.strftime("%Y-%m-%d")
+        tasks.append((trade_date, "上市", fetch_twse_daily_all))
+        tasks.append((trade_date, "上櫃", fetch_tpex_daily_all))
 
     frames = []
-    workers = min(FETCH_WORKERS, max(1, len(dates)))
+    workers = min(FETCH_WORKERS, max(1, len(tasks)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(_fetch_one, day) for day in dates]
+        futures = [pool.submit(fetch_market_day_cached, td, market, fn) for td, market, fn in tasks]
         for future in as_completed(futures):
             try:
-                frames.extend(future.result())
+                df = future.result()
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    frames.append(df)
             except Exception:
                 continue
 
@@ -1469,7 +1470,6 @@ def infer_issuer_from_warrant_name(name):
 
 WARRANT_MARKET_URLS = [
     "https://openapi.twse.com.tw/v1/opendata/t187ap47_L",
-    "https://www.tpex.org.tw/openapi/v1/t187ap47_O",
     "https://openapi.tpex.org.tw/v1/t187ap47_O",
 ]
 
@@ -1582,6 +1582,92 @@ def _warrants_from_record_batches(record_batches, target_code, stock_price=None)
     return out_df.to_dict("records")
 
 
+def _build_warrant_lookup(record_batches, target_codes):
+    """一次掃描全市場權證資料，依標的代號分組（避免每檔重複 iterrows）。"""
+    target_codes = {normalize_code(c) for c in target_codes if c}
+    lookup = {code: [] for code in target_codes}
+    if not target_codes or not record_batches:
+        return lookup
+
+    today = datetime.now().date()
+    for records in record_batches:
+        if not records:
+            continue
+        df = pd.DataFrame(records)
+        if df.empty:
+            continue
+        df.columns = [clean_text(c) for c in df.columns]
+        cols = list(df.columns)
+        code_col = _pick_col(cols, ["權證", "代號"]) or _pick_col(cols, ["證券", "代號"])
+        name_col = _pick_col(cols, ["權證", "名稱"]) or _pick_col(cols, ["證券", "名稱"])
+        issuer_col = _pick_col(cols, ["發行"]) or _pick_col(cols, ["券商"])
+        underlying_col = _pick_col(cols, ["標的", "代號"]) or _pick_col(cols, ["標的"])
+        strike_col = _pick_col(cols, ["履約", "價"])
+        expiry_col = _pick_col(cols, ["到期"])
+        type_col = _pick_col(cols, ["認購"]) or _pick_col(cols, ["權證", "類型"])
+        price_col = _pick_col(cols, ["收盤"]) or _pick_col(cols, ["成交"])
+        ratio_col = _pick_col(cols, ["行使", "比例"])
+        days_col = _pick_col(cols, ["剩餘", "天"])
+
+        for _, record in df.iterrows():
+            row_text = " ".join(clean_text(v) for v in record.astype(str).tolist())
+            under = clean_text(record.get(underlying_col, "")) if underlying_col else ""
+            matched = [c for c in target_codes if c in under or c in row_text]
+            if not matched:
+                continue
+
+            wcode = clean_text(record.get(code_col, "")) if code_col else ""
+            wname = clean_text(record.get(name_col, "")) if name_col else ""
+            if not wcode and not wname:
+                continue
+
+            expiry = parse_date_any(record.get(expiry_col, "")) if expiry_col else None
+            days_left = (expiry - today).days if expiry else None
+            if days_col:
+                dval = parse_number(record.get(days_col, ""), is_int=True)
+                if dval is not None:
+                    days_left = dval
+            if days_left is None or days_left < WARRANT_MIN_DAYS or days_left > WARRANT_MAX_DAYS:
+                continue
+
+            strike = parse_number(record.get(strike_col, "")) if strike_col else None
+            raw_type = clean_text(record.get(type_col, "")) if type_col else wname
+            if "售" in raw_type:
+                wtype = "認售"
+            elif "購" in raw_type:
+                wtype = "認購"
+            else:
+                wtype = "認購/認售"
+            issuer = clean_text(record.get(issuer_col, "")) if issuer_col else infer_issuer_from_warrant_name(wname)
+            price_text = clean_text(record.get(price_col, "")) if price_col else ""
+            ratio_text = clean_text(record.get(ratio_col, "")) if ratio_col else ""
+
+            for stock_code in matched:
+                lookup[stock_code].append(
+                    {
+                        "code": wcode,
+                        "stock_id": wcode,
+                        "name": wname,
+                        "type": wtype,
+                        "issuer": issuer,
+                        "broker": issuer,
+                        "stock_code": stock_code,
+                        "strike": strike if strike is not None else "",
+                        "days_left": int(days_left),
+                        "price": price_text,
+                        "ratio": ratio_text,
+                        "underlying_price": "",
+                    }
+                )
+
+    for code, rows in lookup.items():
+        if not rows:
+            continue
+        deduped = pd.DataFrame(rows).drop_duplicates(subset=["code", "name"], keep="first")
+        lookup[code] = deduped.to_dict("records")
+    return lookup
+
+
 def fetch_warrants_for_stock(target_code, stock_price=None, market_batches=None):
     batches = market_batches if market_batches is not None else fetch_warrant_market_data()
     return _warrants_from_record_batches(batches, target_code, stock_price=stock_price)
@@ -1590,12 +1676,18 @@ def fetch_warrants_for_stock(target_code, stock_price=None, market_batches=None)
 def build_warrants_from_bullish(bullish_items):
     warrants = []
     seen = set()
-    market_batches = fetch_warrant_market_data(force=True)
+    stock_codes = []
     for stock in bullish_items[:MAX_WARRANT_STOCKS]:
         code = str(stock.get("stock_id") or stock.get("code") or "")
-        if not code:
-            continue
-        for item in fetch_warrants_for_stock(code, market_batches=market_batches):
+        if code:
+            stock_codes.append(code)
+    if not stock_codes:
+        return warrants
+
+    market_batches = fetch_warrant_market_data(force=True)
+    lookup = _build_warrant_lookup(market_batches, stock_codes)
+    for code in stock_codes:
+        for item in lookup.get(normalize_code(code), []):
             key = (item.get("code"), item.get("name"))
             if key in seen:
                 continue
@@ -1606,7 +1698,7 @@ def build_warrants_from_bullish(bullish_items):
     return warrants
 
 
-def run_web_strategy_analysis():
+def run_web_strategy_analysis(include_warrants=True):
     daily_all = collect_daily_history()
     if daily_all.empty:
         return {
@@ -1650,7 +1742,7 @@ def run_web_strategy_analysis():
 
     warrant_pool = filter_warrant_candidates(training_pool)
     warrant_items = pool_to_api_items(warrant_pool, score_col="StrongScore")
-    warrants = build_warrants_from_bullish(warrant_items)
+    warrants = build_warrants_from_bullish(warrant_items) if include_warrants else []
 
     settle_date = ""
     if "日期" in daily_all.columns:
@@ -1673,6 +1765,7 @@ def run_web_strategy_analysis():
         "pool_count": len(training_pool),
         "otc_supplement_count": len(otc_supplement) if isinstance(otc_supplement, pd.DataFrame) else 0,
         "warrant_candidate_count": len(warrant_pool),
+        "_warrant_items": warrant_items,
         "strategy": {
             "bullish": "CLIENT_BULLISH：training pool + 上櫃補強 + mix 排序（同桌面版）",
             "bearish": "CLIENT_BEARISH：空方 training pool + 星等排序（同桌面版）",
