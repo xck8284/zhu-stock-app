@@ -9,4 +9,5 @@ passlib[bcrypt]
 PyJWT
 sib-api-v3-sdk
 requests
+pandas
 psycopg2-binary
