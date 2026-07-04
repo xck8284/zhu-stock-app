@@ -22,6 +22,8 @@ def save_web_analysis_result(result: dict) -> dict:
         payload = {
             "bullish": result.get("bullish") or [],
             "bearish": result.get("bearish") or [],
+            "bullish_keyk": result.get("bullish_keyk") or [],
+            "bearish_keyk": result.get("bearish_keyk") or [],
             "warrants": result.get("warrants") or [],
             "meta": {
                 "updated_at": result.get("updated_at", ""),
@@ -30,6 +32,8 @@ def save_web_analysis_result(result: dict) -> dict:
                 "settle_date": result.get("settle_date", ""),
                 "bullish_count": result.get("bullish_count", 0),
                 "bearish_count": result.get("bearish_count", 0),
+                "bullish_keyk_count": result.get("bullish_keyk_count", 0),
+                "bearish_keyk_count": result.get("bearish_keyk_count", 0),
                 "warrant_count": result.get("warrant_count", 0),
                 "strategy": result.get("strategy") or {},
                 "job_status": result.get("job_status", "idle"),
@@ -38,6 +42,7 @@ def save_web_analysis_result(result: dict) -> dict:
                 "job_progress": result.get("job_progress", 0),
                 "job_message": result.get("job_message", ""),
                 "job_elapsed_sec": result.get("job_elapsed_sec", 0),
+                "analysis_data_ready": result.get("analysis_data_ready", False),
                 "data_stats": result.get("data_stats") or {},
             },
         }
@@ -53,7 +58,14 @@ def save_web_analysis_result(result: dict) -> dict:
 
         row.bullish_json = json.dumps(payload["bullish"], ensure_ascii=False)
         row.bearish_json = json.dumps(payload["bearish"], ensure_ascii=False)
-        row.warrants_json = json.dumps(payload["warrants"], ensure_ascii=False)
+        row.warrants_json = json.dumps(
+            {
+                "warrants": payload["warrants"],
+                "bullish_keyk": payload["bullish_keyk"],
+                "bearish_keyk": payload["bearish_keyk"],
+            },
+            ensure_ascii=False,
+        )
         row.meta_json = json.dumps(payload["meta"], ensure_ascii=False)
         row.settle_date = str(payload["meta"].get("settle_date") or "")
         row.updated_at = _utc_now()
@@ -76,16 +88,30 @@ def load_web_analysis_result() -> dict | None:
             return None
 
         meta = json.loads(row.meta_json or "{}")
+        extra = {}
+        try:
+            extra = json.loads(row.warrants_json or "{}")
+            if not isinstance(extra, dict):
+                extra = {"warrants": extra}
+        except Exception:
+            extra = {}
+        warrants = extra.get("warrants") if isinstance(extra, dict) else []
+        if warrants is None:
+            warrants = extra if isinstance(extra, list) else []
         return {
             "bullish": json.loads(row.bullish_json or "[]"),
             "bearish": json.loads(row.bearish_json or "[]"),
-            "warrants": json.loads(row.warrants_json or "[]"),
+            "bullish_keyk": extra.get("bullish_keyk", []) if isinstance(extra, dict) else [],
+            "bearish_keyk": extra.get("bearish_keyk", []) if isinstance(extra, dict) else [],
+            "warrants": warrants or [],
             "updated_at": meta.get("updated_at", ""),
             "source": meta.get("source", "web-strategy"),
             "market": meta.get("market", ""),
             "settle_date": meta.get("settle_date", row.settle_date or ""),
             "bullish_count": meta.get("bullish_count", 0),
             "bearish_count": meta.get("bearish_count", 0),
+            "bullish_keyk_count": meta.get("bullish_keyk_count", 0),
+            "bearish_keyk_count": meta.get("bearish_keyk_count", 0),
             "warrant_count": meta.get("warrant_count", 0),
             "strategy": meta.get("strategy") or {},
             "job_status": meta.get("job_status", "idle"),
@@ -94,6 +120,7 @@ def load_web_analysis_result() -> dict | None:
             "job_progress": meta.get("job_progress", 0),
             "job_message": meta.get("job_message", ""),
             "job_elapsed_sec": meta.get("job_elapsed_sec", 0),
+            "analysis_data_ready": meta.get("analysis_data_ready", False),
             "data_stats": meta.get("data_stats") or {},
         }
     except Exception:

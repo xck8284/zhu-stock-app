@@ -18,7 +18,8 @@ from web_analysis_store import load_web_analysis_result, save_web_analysis_resul
 logger = logging.getLogger("zhu.analysis")
 TW = ZoneInfo("Asia/Taipei")
 
-STALE_RUNNING_MINUTES = 10
+STALE_RUNNING_MINUTES_WARM = 15
+STALE_RUNNING_MINUTES_COLD = 90
 WARRANT_PHASE_TIMEOUT_SEC = 90
 
 _scheduler: BackgroundScheduler | None = None
@@ -87,8 +88,32 @@ def is_job_running() -> bool:
     return _job_running
 
 
+def _stale_limit_minutes() -> int:
+    try:
+        from web_daily_cache import count_cached_trading_days
+
+        cached_days = count_cached_trading_days()
+    except Exception:
+        cached_days = 0
+    if cached_days >= 280:
+        return STALE_RUNNING_MINUTES_WARM
+    if cached_days >= 120:
+        return 45
+    return STALE_RUNNING_MINUTES_COLD
+
+
+def _save_running_job_patch(**fields) -> dict:
+    meta = dict(load_web_analysis_result() or {})
+    if meta.get("job_status") != "running":
+        return meta
+    meta.update(fields)
+    save_web_analysis_result(meta)
+    _notify_analysis_complete(meta)
+    return meta
+
+
 def recover_stale_running_job(meta: dict | None = None) -> dict:
-    """若 running 超過時限，視為 Render 逾時中斷並重置，避免永遠卡住。"""
+    """若 running 超過時限，重置狀態；未完成的新分析不得偽裝成「分析完成」。"""
     global _job_running
 
     meta = dict(meta or load_web_analysis_result() or {})
@@ -104,14 +129,10 @@ def recover_stale_running_job(meta: dict | None = None) -> dict:
 
     elapsed_min = (tw_now() - started).total_seconds() / 60.0
     meta["job_elapsed_sec"] = int(elapsed_min * 60)
+    stale_limit = _stale_limit_minutes()
 
-    # 執行緒仍在跑但已超過時限 → 強制解鎖，保留已算出的清單
-    if elapsed_min >= STALE_RUNNING_MINUTES:
-        has_data = bool(
-            meta.get("updated_at")
-            and (meta.get("bullish_count") or meta.get("bearish_count"))
-        )
-        if has_data:
+    if elapsed_min >= stale_limit:
+        if meta.get("analysis_data_ready"):
             meta["job_status"] = "idle"
             meta["job_error"] = ""
             meta["job_message"] = "分析完成"
@@ -120,7 +141,7 @@ def recover_stale_running_job(meta: dict | None = None) -> dict:
             meta = _set_job_meta(
                 meta,
                 "failed",
-                f"分析逾時（>{STALE_RUNNING_MINUTES} 分鐘），請重新啟動",
+                f"分析未完成（建立 480 天歷史需 15～20 分鐘，已跑 {int(elapsed_min)} 分鐘）。請再按「強制重新啟動」",
             )
         save_web_analysis_result(meta)
         _job_running = False
@@ -142,20 +163,17 @@ def get_running_progress(meta: dict | None = None) -> dict:
     if started is not None:
         elapsed_sec = max(0, int((tw_now() - started).total_seconds()))
 
-    # 有 DB 快取後日常約 1 分鐘；首次建立 480 天快取較久
-    estimated_total = 600 if (load_web_analysis_result() or {}).get("data_stats", {}).get("history_trading_days", 0) < 200 else 120
-    progress = min(97, max(5, int(elapsed_sec / estimated_total * 100)))
-    if elapsed_sec < 25:
-        message = "正在抓取台股歷史資料…"
-    elif elapsed_sec < 50:
-        message = "正在計算週K 與趨勢線…"
-    elif elapsed_sec < 70:
-        message = "正在套用策略篩選…"
+    cached = load_web_analysis_result() or {}
+    if cached.get("job_message"):
+        message = str(cached.get("job_message"))
+        progress = int(cached.get("job_progress") or 0)
     else:
-        message = "正在整理權證清單…"
+        estimated_total = 900 if _stale_limit_minutes() >= 45 else 120
+        progress = min(97, max(5, int(elapsed_sec / estimated_total * 100)))
+        message = "正在抓取台股歷史資料…"
 
     meta["job_elapsed_sec"] = elapsed_sec
-    meta["job_progress"] = progress
+    meta["job_progress"] = max(progress, meta.get("job_progress") or 0)
     meta["job_message"] = message
     return meta
 
@@ -206,10 +224,20 @@ def run_analysis_and_persist(trigger: str = "manual") -> dict:
     try:
         logger.info("[analysis] start trigger=%s", trigger)
         running_meta = _set_job_meta(load_web_analysis_result() or {}, "running")
+        running_meta["analysis_data_ready"] = False
+        running_meta["job_progress"] = 5
+        running_meta["job_message"] = "正在抓取台股歷史資料（對齊桌面版 480 天）…"
         save_web_analysis_result(running_meta)
         _notify_analysis_complete(running_meta)
 
-        result = run_web_strategy_analysis(include_warrants=False)
+        def _collect_progress(done, total):
+            pct = min(84, max(6, int(done / max(total, 1) * 84)))
+            _save_running_job_patch(
+                job_progress=pct,
+                job_message=f"正在抓取台股歷史資料… ({done}/{total})",
+            )
+
+        result = run_web_strategy_analysis(include_warrants=False, progress_callback=_collect_progress)
         warrant_items = result.pop("_warrant_items", [])
 
         prev = load_web_analysis_result() or {}
@@ -218,6 +246,7 @@ def run_analysis_and_persist(trigger: str = "manual") -> dict:
 
         # 先看多/看空：策略算完立刻存檔，避免權證階段拖垮整體
         ready = _set_job_meta(result, "idle")
+        ready["analysis_data_ready"] = True
         ready["job_message"] = "看多/看空已完成，正在整理權證…"
         ready["job_progress"] = 100
         save_web_analysis_result(ready)

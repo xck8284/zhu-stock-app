@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from io import StringIO
@@ -1006,6 +1007,7 @@ def build_training_pool(weekly_ma_df, master_df):
                 "週結算日期": latest["週結算日期"].strftime("%Y-%m-%d"),
                 "StrongScore": score,
                 "最新一週成交量(張)": int(latest["週成交量(張)"]),
+                "是否最新正式突破": "是" if trend.get("strict_ok") else "否",
                 "是否突破後守穩趨勢線": "是",
                 **extra,
             }
@@ -1014,7 +1016,10 @@ def build_training_pool(weekly_ma_df, master_df):
     if not rows:
         return pd.DataFrame()
     out = pd.DataFrame(rows)
-    out = out.sort_values(["StrongScore", "星等數值", "最新一週成交量(張)", "股票代號"], ascending=[False, False, False, True])
+    out = out.sort_values(
+        ["StrongScore", "星等數值", "是否最新正式突破", "最新一週成交量(張)", "股票代號"],
+        ascending=[False, False, False, False, True],
+    )
     return out.reset_index(drop=True)
 
 
@@ -1244,16 +1249,134 @@ def build_client_bullish_view(training_df):
 def build_client_bearish_view(bearish_df):
     cols = [
         "股票代號", "股票名稱", "市場別", "產業別", "週結算日期",
-        "星等", "乖離率(%)", "短線回補Alarm", "長線回補Alarm", "BearishScore",
+        "星等", "乖離率(%)", "短線回補Alarm", "長線回補Alarm",
     ]
     if bearish_df is None or bearish_df.empty:
-        return pd.DataFrame(columns=[c for c in cols if c != "BearishScore"])
+        return pd.DataFrame(columns=cols)
     use_cols = [c for c in cols if c in bearish_df.columns]
     out = bearish_df[use_cols].copy()
     out = out.drop_duplicates(subset=["股票代號"]).reset_index(drop=True)
     out["_star_"] = out["星等"].astype(str).map(lambda x: x.count("★")) if "星等" in out.columns else 0
     out = out.sort_values(["_star_", "股票代號"], ascending=[False, True], kind="mergesort")
     return out.drop(columns=["_star_"], errors="ignore").reset_index(drop=True)
+
+
+def build_strict_breakout_sheet(weekly_ma_df, master_df):
+    """STRICT_BREAKOUT → 桌面版多方關鍵K 來源。"""
+    if weekly_ma_df.empty:
+        return pd.DataFrame()
+    df = weekly_ma_df.copy()
+    df["週結算日期"] = pd.to_datetime(df["週結算日期"])
+    df = df.sort_values(["股票代號", "週結算日期"]).reset_index(drop=True)
+    industry_map = master_df[["股票代號", "產業別"]].drop_duplicates(subset=["股票代號"]).copy()
+    rows = []
+    for code, grp in df.groupby("股票代號"):
+        grp = grp.sort_values("週結算日期").reset_index(drop=True).copy()
+        latest = grp.iloc[-1]
+        if pd.isna(latest["週20MA"]) or latest["週收盤價"] < latest["週20MA"]:
+            continue
+        if pd.isna(latest["週成交量(張)"]) or latest["週成交量(張)"] < MIN_WEEKLY_VOLUME:
+            continue
+        trend = analyze_best_descending_trendline(grp)
+        if trend is None or not trend.get("strict_ok"):
+            continue
+        work = trend["work_df"]
+        i, j = trend["i"], trend["j"]
+        industry = industry_map.loc[industry_map["股票代號"] == code, "產業別"]
+        industry_val = industry.iloc[0] if len(industry) > 0 else "未分類"
+        rows.append(
+            {
+                "股票代號": str(code),
+                "股票名稱": str(latest["股票名稱"]),
+                "市場別": str(latest["市場別"]),
+                "產業別": str(industry_val),
+                "週結算日期": latest["週結算日期"].strftime("%Y-%m-%d"),
+                "最新週收盤價": round(float(latest["週收盤價"]), 4),
+                "週20MA": round(float(latest["週20MA"]), 4),
+                "最新一週成交量(張)": int(latest["週成交量(張)"]),
+                "趨勢線距離(%)": round(float(trend["line_distance_pct"]), 2) if trend["line_distance_pct"] is not None else None,
+                "盤整區距離(%)": round(float(trend["box_distance_pct"]), 2) if trend["box_distance_pct"] is not None else None,
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    return out.sort_values(
+        ["盤整區距離(%)", "趨勢線距離(%)", "最新一週成交量(張)", "股票代號"],
+        ascending=[False, False, False, True],
+    ).reset_index(drop=True)
+
+
+def build_bearish_key_breakdown_sheet(weekly_ma_df, master_df):
+    """BEARISH_KEY_BREAKDOWN → 桌面版空方關鍵K 來源。"""
+    if weekly_ma_df.empty:
+        return pd.DataFrame()
+    df = weekly_ma_df.copy()
+    df["週結算日期"] = pd.to_datetime(df["週結算日期"])
+    df = df.sort_values(["股票代號", "週結算日期"]).reset_index(drop=True)
+    industry_map = master_df[["股票代號", "產業別"]].drop_duplicates(subset=["股票代號"]).copy()
+    rows = []
+    for code, grp in df.groupby("股票代號"):
+        grp = grp.sort_values("週結算日期").reset_index(drop=True).copy()
+        latest = grp.iloc[-1]
+        if pd.isna(latest["週20MA"]) or latest["週收盤價"] >= latest["週20MA"]:
+            continue
+        if pd.isna(latest["週成交量(張)"]) or latest["週成交量(張)"] < MIN_WEEKLY_VOLUME:
+            continue
+        trend = analyze_best_ascending_trendline(grp)
+        if trend is None or not (trend.get("line_break_now") and not trend.get("line_break_prev")):
+            continue
+        industry = industry_map.loc[industry_map["股票代號"] == code, "產業別"]
+        industry_val = industry.iloc[0] if len(industry) > 0 else "未分類"
+        rows.append(
+            {
+                "股票代號": str(code),
+                "股票名稱": str(latest["股票名稱"]),
+                "市場別": str(latest["市場別"]),
+                "產業別": str(industry_val),
+                "週結算日期": latest["週結算日期"].strftime("%Y-%m-%d"),
+                "最新週收盤價": round(float(latest["週收盤價"]), 4),
+                "週20MA": round(float(latest["週20MA"]), 4),
+                "最新一週成交量(張)": int(latest["週成交量(張)"]),
+                "趨勢線距離(%)": round(float(trend["line_distance_pct"]), 2) if trend["line_distance_pct"] is not None else None,
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    return out.sort_values(["趨勢線距離(%)", "最新一週成交量(張)", "股票代號"], ascending=[False, False, True]).reset_index(drop=True)
+
+
+def build_client_bullish_keyk_view(strict_df):
+    cols = [
+        "股票代號", "股票名稱", "市場別", "產業別", "週結算日期",
+        "最新週收盤價", "週20MA", "最新一週成交量(張)", "趨勢線距離(%)", "盤整區距離(%)",
+    ]
+    if strict_df is None or strict_df.empty:
+        return pd.DataFrame(columns=cols)
+    use_cols = [c for c in cols if c in strict_df.columns]
+    out = strict_df[use_cols].copy().drop_duplicates(subset=["股票代號"]).reset_index(drop=True)
+    sort_cols = [c for c in ["盤整區距離(%)", "趨勢線距離(%)", "最新一週成交量(張)", "股票代號"] if c in out.columns]
+    asc = [False if c != "股票代號" else True for c in sort_cols]
+    if sort_cols:
+        out = out.sort_values(sort_cols, ascending=asc).reset_index(drop=True)
+    return out
+
+
+def build_client_bearish_keyk_view(bearish_key_df):
+    cols = [
+        "股票代號", "股票名稱", "市場別", "產業別", "週結算日期",
+        "最新週收盤價", "週20MA", "最新一週成交量(張)", "趨勢線距離(%)",
+    ]
+    if bearish_key_df is None or bearish_key_df.empty:
+        return pd.DataFrame(columns=cols)
+    use_cols = [c for c in cols if c in bearish_key_df.columns]
+    out = bearish_key_df[use_cols].copy().drop_duplicates(subset=["股票代號"]).reset_index(drop=True)
+    sort_cols = [c for c in ["趨勢線距離(%)", "最新一週成交量(張)", "股票代號"] if c in out.columns]
+    asc = [False if c != "股票代號" else True for c in sort_cols]
+    if sort_cols:
+        out = out.sort_values(sort_cols, ascending=asc).reset_index(drop=True)
+    return out
 
 
 def filter_bearish_for_display(pool_df):
@@ -1302,6 +1425,27 @@ def pool_to_api_items(pool_df, score_col="StrongScore"):
         else:
             item["strong_score"] = float(score_val)
         items.append(item)
+    return items
+
+
+def keyk_to_api_items(keyk_df):
+    items = []
+    for _, row in keyk_df.iterrows():
+        items.append(
+            {
+                "stock_id": str(row["股票代號"]),
+                "code": str(row["股票代號"]),
+                "name": str(row.get("股票名稱", "")),
+                "industry": str(row.get("產業別", "")),
+                "market": str(row.get("市場別", "")),
+                "settle_date": str(row.get("週結算日期", "")),
+                "close": row.get("最新週收盤價", ""),
+                "ma20": row.get("週20MA", ""),
+                "volume_lots": row.get("最新一週成交量(張)", ""),
+                "line_distance_pct": row.get("趨勢線距離(%)", ""),
+                "box_distance_pct": row.get("盤整區距離(%)", ""),
+            }
+        )
     return items
 
 
@@ -1522,7 +1666,7 @@ def fetch_tpex_daily_all(date_obj):
     return None
 
 
-def collect_daily_history(history_calendar_days=HISTORY_CALENDAR_DAYS):
+def collect_daily_history(history_calendar_days=HISTORY_CALENDAR_DAYS, progress_callback=None):
     """並行抓取上市/上櫃日資料（對齊桌面版 ~460 天）；有 DB 快取後日常只補最新 1～2 天。"""
     from web_daily_cache import fetch_market_day_cached
 
@@ -1539,18 +1683,26 @@ def collect_daily_history(history_calendar_days=HISTORY_CALENDAR_DAYS):
     if not dates:
         return pd.DataFrame()
 
-    def _fetch_one(day, market, fetch_fn):
-        trade_date = day.strftime("%Y-%m-%d")
-        try:
-            df = fetch_market_day_cached(trade_date, market, fetch_fn)
-            if isinstance(df, pd.DataFrame) and not df.empty:
-                return df
-        except Exception:
-            return None
-        return None
-
     listed_tasks = [(d, "上市", fetch_twse_daily_all) for d in dates]
     otc_tasks = [(d, "上櫃", fetch_tpex_daily_all) for d in dates]
+    total_tasks = len(listed_tasks) + len(otc_tasks)
+    done = 0
+    lock = threading.Lock()
+
+    def _fetch_one(day, market, fetch_fn):
+        nonlocal done
+        trade_date = day.strftime("%Y-%m-%d")
+        df = None
+        try:
+            df = fetch_market_day_cached(trade_date, market, fetch_fn)
+        except Exception:
+            df = None
+        with lock:
+            done += 1
+            if progress_callback and (done % 15 == 0 or done == total_tasks):
+                progress_callback(done, total_tasks)
+        return df if isinstance(df, pd.DataFrame) and not df.empty else None
+
     frames = []
 
     def _run_market_tasks(tasks, workers):
@@ -1830,8 +1982,8 @@ def build_warrants_from_bullish(bullish_items):
     return warrants
 
 
-def run_web_strategy_analysis(include_warrants=True):
-    daily_all = collect_daily_history()
+def run_web_strategy_analysis(include_warrants=True, progress_callback=None):
+    daily_all = collect_daily_history(progress_callback=progress_callback)
     if daily_all.empty:
         return {
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1840,13 +1992,16 @@ def run_web_strategy_analysis(include_warrants=True):
             "market": "上市+上櫃（週K策略）",
             "bullish": [],
             "bearish": [],
+            "bullish_keyk": [],
+            "bearish_keyk": [],
             "warrants": [],
             "bullish_count": 0,
             "bearish_count": 0,
+            "bullish_keyk_count": 0,
+            "bearish_keyk_count": 0,
             "warrant_count": 0,
             "strategy": {
-                "min_score": DISPLAY_MIN_SCORE,
-                "min_stars": DISPLAY_MIN_STARS,
+                "bullish_rule": "TRAINING_POOL：週量≥1萬＋趨勢突破守穩＋StrongScore≥55（同桌面版 CLIENT_BULLISH）",
                 "min_weekly_volume": MIN_WEEKLY_VOLUME,
                 "warrant_days": f"{WARRANT_MIN_DAYS}-{WARRANT_MAX_DAYS}",
             },
@@ -1866,11 +2021,18 @@ def run_web_strategy_analysis(include_warrants=True):
         training_pool = training_pool.drop_duplicates(subset=["股票代號"], keep="first").reset_index(drop=True)
 
     bearish_pool = build_bearish_pool(weekly_ma_df, master_df)
+    strict_df = build_strict_breakout_sheet(weekly_ma_df, master_df)
+    bearish_key_df = build_bearish_key_breakdown_sheet(weekly_ma_df, master_df)
 
     bullish_display = build_client_bullish_view(training_pool)
     bearish_display = build_client_bearish_view(bearish_pool)
+    bullish_keyk_display = build_client_bullish_keyk_view(strict_df)
+    bearish_keyk_display = build_client_bearish_keyk_view(bearish_key_df)
+
     bullish_items = pool_to_api_items(bullish_display, score_col="StrongScore")
     bearish_items = pool_to_api_items(bearish_display, score_col="BearishScore")
+    bullish_keyk_items = keyk_to_api_items(bullish_keyk_display)
+    bearish_keyk_items = keyk_to_api_items(bearish_keyk_display)
 
     warrant_pool = filter_warrant_candidates(training_pool)
     warrant_items = pool_to_api_items(warrant_pool, score_col="StrongScore")
@@ -1900,11 +2062,16 @@ def run_web_strategy_analysis(include_warrants=True):
         "market": "上市+上櫃（週K｜趨勢突破守穩｜週量≥1萬）",
         "bullish": bullish_items,
         "bearish": bearish_items,
+        "bullish_keyk": bullish_keyk_items,
+        "bearish_keyk": bearish_keyk_items,
         "warrants": warrants,
         "bullish_count": len(bullish_items),
         "bearish_count": len(bearish_items),
+        "bullish_keyk_count": len(bullish_keyk_items),
+        "bearish_keyk_count": len(bearish_keyk_items),
         "warrant_count": len(warrants),
         "pool_count": len(training_pool),
+        "training_pool_count": len(training_pool),
         "otc_supplement_count": len(otc_supplement) if isinstance(otc_supplement, pd.DataFrame) else 0,
         "warrant_candidate_count": len(warrant_pool),
         "_warrant_items": warrant_items,
@@ -1916,14 +2083,14 @@ def run_web_strategy_analysis(include_warrants=True):
             "daily_rows": len(daily_all),
         },
         "strategy": {
-            "bullish": "CLIENT_BULLISH：training pool + 上櫃補強 + mix 排序（同桌面版）",
-            "bearish": "CLIENT_BEARISH：空方 training pool + 星等排序（同桌面版）",
+            "bullish": "CLIENT_BULLISH＝TRAINING_POOL（週量≥1萬、趨勢突破守穩、StrongScore≥55）＋上櫃補強40檔",
+            "bullish_keyk": "CLIENT_BULLISH_KEYK＝STRICT_BREAKOUT（本週正式突破趨勢線+盤整）",
+            "bearish": "CLIENT_BEARISH＝BEARISH_TRAINING_POOL（週量≥1萬、跌破守穩、BearishScore≥55）",
+            "bearish_keyk": "CLIENT_BEARISH_KEYK＝BEARISH_KEY_BREAKDOWN（本週正式跌破）",
             "warrant_min_score": WARRANT_MIN_SCORE,
             "warrant_min_stars": WARRANT_MIN_STARS,
             "min_weekly_volume": MIN_WEEKLY_VOLUME,
             "bias_limit": None,
-            "require_weekly_20ma_breakout": True,
             "warrant_days": f"{WARRANT_MIN_DAYS}-{WARRANT_MAX_DAYS}",
-            "warrant_issuers": "all",
         },
     }

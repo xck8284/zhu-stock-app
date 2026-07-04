@@ -1386,6 +1386,8 @@ WARRANT_DATA = []
 
 WEB_BULLISH_DATA = []
 WEB_BEARISH_DATA = []
+WEB_BULLISH_KEYK_DATA = []
+WEB_BEARISH_KEYK_DATA = []
 WEB_WARRANT_DATA = []
 WEB_ANALYSIS_META = {"updated_at": "", "source": "web"}
 
@@ -1405,13 +1407,26 @@ def _normalize_stock_items(items):
         stock_id = str(item.get("stock_id") or item.get("code") or item.get("symbol") or "").strip()
         if not stock_id:
             continue
-        normalized.append({
-            "stock_id": stock_id,
-            "name": str(item.get("name") or "").strip(),
-            "stars": str(item.get("stars") or item.get("star") or "").strip(),
-            "strong_score": item.get("strong_score", item.get("score", 0)),
-            "bias": _format_bias(item.get("bias")),
-        })
+        row = dict(item)
+        row["stock_id"] = stock_id
+        row["code"] = stock_id
+        row["bias"] = _format_bias(item.get("bias"))
+        normalized.append(row)
+    return normalized
+
+
+def _normalize_keyk_items(items):
+    normalized = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        stock_id = str(item.get("stock_id") or item.get("code") or "").strip()
+        if not stock_id:
+            continue
+        row = dict(item)
+        row["stock_id"] = stock_id
+        row["code"] = stock_id
+        normalized.append(row)
     return normalized
 
 
@@ -1477,10 +1492,12 @@ from analysis_scheduler import run_analysis_in_background
 
 
 def _apply_web_analysis_result(result):
-    global WEB_BULLISH_DATA, WEB_BEARISH_DATA, WEB_WARRANT_DATA, WEB_ANALYSIS_META
+    global WEB_BULLISH_DATA, WEB_BEARISH_DATA, WEB_BULLISH_KEYK_DATA, WEB_BEARISH_KEYK_DATA, WEB_WARRANT_DATA, WEB_ANALYSIS_META
 
     WEB_BULLISH_DATA = _normalize_stock_items(result.get("bullish", []))
     WEB_BEARISH_DATA = _normalize_stock_items(result.get("bearish", []))
+    WEB_BULLISH_KEYK_DATA = _normalize_keyk_items(result.get("bullish_keyk", []))
+    WEB_BEARISH_KEYK_DATA = _normalize_keyk_items(result.get("bearish_keyk", []))
     WEB_WARRANT_DATA = _normalize_warrant_items(result.get("warrants", []))
     WEB_ANALYSIS_META = {
         "updated_at": result.get("updated_at", ""),
@@ -1489,6 +1506,8 @@ def _apply_web_analysis_result(result):
         "market": result.get("market", ""),
         "bullish_count": len(WEB_BULLISH_DATA),
         "bearish_count": len(WEB_BEARISH_DATA),
+        "bullish_keyk_count": len(WEB_BULLISH_KEYK_DATA),
+        "bearish_keyk_count": len(WEB_BEARISH_KEYK_DATA),
         "warrant_count": len(WEB_WARRANT_DATA),
         "job_status": result.get("job_status", "idle"),
         "job_error": result.get("job_error", ""),
@@ -1496,7 +1515,9 @@ def _apply_web_analysis_result(result):
         "job_progress": result.get("job_progress", 0),
         "job_message": result.get("job_message", ""),
         "job_elapsed_sec": result.get("job_elapsed_sec", 0),
+        "analysis_data_ready": result.get("analysis_data_ready", False),
         "data_stats": result.get("data_stats") or {},
+        "strategy": result.get("strategy") or {},
         "auto_refresh": "weekday 16:05 Asia/Taipei",
     }
     return WEB_ANALYSIS_META
@@ -1641,6 +1662,26 @@ def web_get_warrants(
     user = get_current_user(authorization, db)
     require_active_license(user)
     return {"items": WEB_WARRANT_DATA}
+
+
+@app.get("/web/bullish-keyk")
+def web_get_bullish_keyk(
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    user = get_current_user(authorization, db)
+    require_active_license(user)
+    return {"items": WEB_BULLISH_KEYK_DATA}
+
+
+@app.get("/web/bearish-keyk")
+def web_get_bearish_keyk(
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    user = get_current_user(authorization, db)
+    require_active_license(user)
+    return {"items": WEB_BEARISH_KEYK_DATA}
 
 
 @app.get("/run-analysis")

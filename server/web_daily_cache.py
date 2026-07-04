@@ -52,6 +52,16 @@ def save_daily_cache(db: Session, trade_date: str, market: str, df: pd.DataFrame
     db.commit()
 
 
+def count_cached_trading_days() -> int:
+    db = SessionLocal()
+    try:
+        return int(db.query(DailyMarketCache.trade_date).distinct().count())
+    except Exception:
+        return 0
+    finally:
+        db.close()
+
+
 def fetch_market_day_cached(trade_date: str, market: str, fetch_fn):
     db = SessionLocal()
     try:
