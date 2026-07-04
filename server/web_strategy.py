@@ -1054,19 +1054,198 @@ def build_bearish_pool(weekly_ma_df, master_df):
 
 
 def filter_bullish_for_display(pool_df):
-    """看多清單：對齊桌面版 CLIENT_BULLISH，顯示完整 training pool（趨勢突破守穩）。"""
-    if pool_df is None or pool_df.empty:
-        return pool_df
-    work = pool_df.copy()
-    work["StrongScore"] = pd.to_numeric(work["StrongScore"], errors="coerce")
-    work["星等數值"] = pd.to_numeric(work["星等數值"], errors="coerce")
-    work["最新一週成交量(張)"] = pd.to_numeric(work["最新一週成交量(張)"], errors="coerce")
-    work = work[work["最新一週成交量(張)"] >= MIN_WEEKLY_VOLUME].copy()
-    work = work.sort_values(
-        ["StrongScore", "星等數值", "最新一週成交量(張)", "股票代號"],
-        ascending=[False, False, False, True],
+    """看多清單：對齊桌面版 CLIENT_BULLISH。"""
+    return build_client_bullish_view(pool_df)
+
+
+def calc_display_star_by_score(score):
+    try:
+        score = float(score)
+    except Exception:
+        score = 0
+    if score >= 130:
+        return "★★★★★", 5
+    if score >= 105:
+        return "★★★★☆", 4
+    if score >= 80:
+        return "★★★☆☆", 3
+    if score >= 60:
+        return "★★☆☆☆", 2
+    return "★☆☆☆☆", 1
+
+
+def build_otc_bullish_supplement_pool(weekly_ma_df, master_df, existing_df=None, min_count=40):
+    """上櫃週K補強（對齊桌面版 build_otc_bullish_supplement_pool）。"""
+    cols = [
+        "股票代號", "股票名稱", "市場別", "產業別", "週結算日期",
+        "StrongScore", "星等", "星等數值", "乖離率(%)",
+        "短線停利Alarm", "長線停利Alarm", "記憶回饋", "最新一週成交量(張)",
+    ]
+    if weekly_ma_df is None or weekly_ma_df.empty:
+        return pd.DataFrame(columns=cols)
+
+    exist_codes = set()
+    if isinstance(existing_df, pd.DataFrame) and not existing_df.empty and "股票代號" in existing_df.columns:
+        exist_codes = set(existing_df["股票代號"].astype(str))
+
+    df = weekly_ma_df.copy()
+    df["週結算日期"] = pd.to_datetime(df["週結算日期"], errors="coerce")
+    latest = df.sort_values(["股票代號", "週結算日期"]).groupby("股票代號", as_index=False).tail(1).copy()
+    latest = latest[latest.get("市場別", "").astype(str).eq("上櫃")].copy()
+    latest = latest[~latest["股票代號"].astype(str).isin(exist_codes)].copy()
+    latest = latest.dropna(subset=["週收盤價", "週20MA", "週5MA"]).copy()
+    if latest.empty:
+        return pd.DataFrame(columns=cols)
+
+    for c in [
+        "週收盤價", "週3MA", "週5MA", "週10MA", "週20MA", "週成交量(張)", "量20MA",
+        "20MA斜率", "5MA斜率", "近13週最高", "近26週最高", "近52週最高",
+    ]:
+        if c in latest.columns:
+            latest[c] = pd.to_numeric(latest[c], errors="coerce")
+
+    vol_min = max(3000, int(MIN_WEEKLY_VOLUME * 0.5))
+    latest = latest[(latest["週收盤價"] >= latest["週20MA"]) & (latest["週成交量(張)"] >= vol_min)].copy()
+    if latest.empty:
+        return pd.DataFrame(columns=cols)
+
+    def _score(r):
+        score = 45
+        tags = []
+        try:
+            close = float(r.get("週收盤價", 0))
+            ma3 = float(r.get("週3MA", 0)) if pd.notna(r.get("週3MA")) else None
+            ma5 = float(r.get("週5MA", 0)) if pd.notna(r.get("週5MA")) else None
+            ma10 = float(r.get("週10MA", 0)) if pd.notna(r.get("週10MA")) else None
+            ma20 = float(r.get("週20MA", 0)) if pd.notna(r.get("週20MA")) else None
+            vol = float(r.get("週成交量(張)", 0)) if pd.notna(r.get("週成交量(張)")) else 0
+            vol20 = float(r.get("量20MA", 0)) if pd.notna(r.get("量20MA")) else 0
+            if ma20 and close >= ma20:
+                score += 15
+                tags.append("站上週20MA")
+            if ma3 and ma5 and ma10 and ma20 and ma3 >= ma5 >= ma10 >= ma20:
+                score += 25
+                tags.append("均線多頭")
+            if pd.notna(r.get("5MA斜率")) and float(r.get("5MA斜率")) > 0:
+                score += 10
+                tags.append("5MA上揚")
+            if pd.notna(r.get("20MA斜率")) and float(r.get("20MA斜率")) > 0:
+                score += 10
+                tags.append("20MA上揚")
+            if vol20 and vol >= vol20:
+                score += 15
+                tags.append("量能大於20週均量")
+            if vol >= MIN_WEEKLY_VOLUME:
+                score += 10
+                tags.append("週量達標")
+            hi13 = r.get("近13週最高")
+            if pd.notna(hi13) and hi13 and close >= float(hi13) * 0.92:
+                score += 10
+                tags.append("接近13週高")
+        except Exception:
+            pass
+        return int(score), "、".join(tags)
+
+    scored = latest.apply(lambda r: _score(r), axis=1)
+    latest["StrongScore"] = [x[0] for x in scored]
+    latest = latest[latest["StrongScore"] >= 60].copy()
+    if latest.empty:
+        return pd.DataFrame(columns=cols)
+
+    industry_map = (
+        master_df[["股票代號", "產業別"]].drop_duplicates(subset=["股票代號"]).copy()
+        if isinstance(master_df, pd.DataFrame) and "產業別" in master_df.columns
+        else pd.DataFrame(columns=["股票代號", "產業別"])
     )
-    return work.head(MAX_RESULTS)
+    latest = latest.drop(columns=["產業別"], errors="ignore").merge(industry_map, on="股票代號", how="left")
+    latest["產業別"] = latest["產業別"].fillna("未分類")
+    latest = latest.sort_values(["StrongScore", "週成交量(張)", "股票代號"], ascending=[False, False, True]).head(int(min_count)).copy()
+
+    star_pairs = latest["StrongScore"].map(calc_display_star_by_score)
+    latest["星等"] = star_pairs.map(lambda x: x[0])
+    latest["星等數值"] = star_pairs.map(lambda x: x[1])
+    latest["乖離率(%)"] = ((latest["週收盤價"] - latest["週20MA"]) / latest["週20MA"] * 100).round(2)
+
+    return pd.DataFrame(
+        {
+            "股票代號": latest["股票代號"].astype(str),
+            "股票名稱": latest["股票名稱"].astype(str),
+            "市場別": "上櫃",
+            "產業別": latest["產業別"].astype(str),
+            "週結算日期": latest["週結算日期"].dt.strftime("%Y-%m-%d"),
+            "StrongScore": latest["StrongScore"].astype(int),
+            "星等": latest["星等"],
+            "星等數值": latest["星等數值"],
+            "乖離率(%)": latest["乖離率(%)"],
+            "短線停利Alarm": "否",
+            "長線停利Alarm": "否",
+            "記憶回饋": "上櫃週K補強分析",
+            "最新一週成交量(張)": latest["週成交量(張)"].astype(int),
+        }
+    )
+
+
+def mix_market_rows_for_display(out, min_otc_visible=25):
+    """對齊桌面版：確保上櫃標的不被上市完全擠到後面。"""
+    if not isinstance(out, pd.DataFrame) or out.empty or "市場別" not in out.columns:
+        return out
+    work = out.copy()
+    if "StrongScore" in work.columns:
+        work["_score_"] = pd.to_numeric(work["StrongScore"], errors="coerce").fillna(0)
+    else:
+        work["_score_"] = 0
+    work["_star_"] = work["星等"].astype(str).map(lambda x: x.count("★")) if "星等" in work.columns else 0
+    listed = work[work["市場別"].astype(str).eq("上市")].sort_values(
+        ["_score_", "_star_", "股票代號"], ascending=[False, False, True], kind="mergesort"
+    )
+    otc = work[work["市場別"].astype(str).eq("上櫃")].sort_values(
+        ["_score_", "_star_", "股票代號"], ascending=[False, False, True], kind="mergesort"
+    )
+    other = work[~work["市場別"].astype(str).isin(["上市", "上櫃"])].sort_values(
+        ["_score_", "_star_", "股票代號"], ascending=[False, False, True], kind="mergesort"
+    )
+    if otc.empty:
+        mixed = pd.concat([listed, other], ignore_index=True)
+    else:
+        head_listed = listed.head(15)
+        head_otc = otc.head(min_otc_visible)
+        remain = pd.concat([listed.iloc[15:], otc.iloc[min_otc_visible:], other], ignore_index=True)
+        remain = remain.sort_values(["_score_", "_star_", "股票代號"], ascending=[False, False, True], kind="mergesort")
+        mixed = pd.concat([head_listed, head_otc, remain], ignore_index=True)
+    return mixed.drop(columns=["_score_", "_star_"], errors="ignore").reset_index(drop=True)
+
+
+def build_client_bullish_view(training_df):
+    cols = [
+        "股票代號", "股票名稱", "市場別", "產業別", "週結算日期",
+        "星等", "StrongScore", "乖離率(%)", "短線停利Alarm", "長線停利Alarm",
+    ]
+    if training_df is None or training_df.empty:
+        return pd.DataFrame(columns=cols)
+    use_cols = [c for c in cols if c in training_df.columns]
+    out = training_df[use_cols].copy()
+    out = out.drop_duplicates(subset=["股票代號"]).reset_index(drop=True)
+    return mix_market_rows_for_display(out, min_otc_visible=25)
+
+
+def build_client_bearish_view(bearish_df):
+    cols = [
+        "股票代號", "股票名稱", "市場別", "產業別", "週結算日期",
+        "星等", "乖離率(%)", "短線回補Alarm", "長線回補Alarm", "BearishScore",
+    ]
+    if bearish_df is None or bearish_df.empty:
+        return pd.DataFrame(columns=[c for c in cols if c != "BearishScore"])
+    use_cols = [c for c in cols if c in bearish_df.columns]
+    out = bearish_df[use_cols].copy()
+    out = out.drop_duplicates(subset=["股票代號"]).reset_index(drop=True)
+    out["_star_"] = out["星等"].astype(str).map(lambda x: x.count("★")) if "星等" in out.columns else 0
+    out = out.sort_values(["_star_", "股票代號"], ascending=[False, True], kind="mergesort")
+    return out.drop(columns=["_star_"], errors="ignore").reset_index(drop=True)
+
+
+def filter_bearish_for_display(pool_df):
+    """看空清單：對齊桌面版 CLIENT_BEARISH。"""
+    return build_client_bearish_view(pool_df)
 
 
 def filter_warrant_candidates(pool_df):
@@ -1087,6 +1266,9 @@ def pool_to_api_items(pool_df, score_col="StrongScore"):
     for _, row in pool_df.iterrows():
         bias = row.get("乖離率(%)")
         bias_text = f"{bias}%" if bias is not None and str(bias) != "" else ""
+        score_val = row.get(score_col)
+        if score_val is None or (isinstance(score_val, float) and pd.isna(score_val)):
+            score_val = 0
         items.append(
             {
                 "stock_id": str(row["股票代號"]),
@@ -1095,10 +1277,13 @@ def pool_to_api_items(pool_df, score_col="StrongScore"):
                 "industry": str(row.get("產業別", "")),
                 "market": str(row.get("市場別", "")),
                 "direction": "看多" if score_col == "StrongScore" else "看空",
-                "strong_score": float(row.get(score_col, 0)),
+                "strong_score": float(score_val),
                 "stars": str(row.get("星等", "")),
                 "bias": bias_text,
                 "settle_date": str(row.get("週結算日期", "")),
+                "short_alarm": str(row.get("短線停利Alarm") or row.get("短線回補Alarm") or ""),
+                "long_alarm": str(row.get("長線停利Alarm") or row.get("長線回補Alarm") or ""),
+                "memory_note": str(row.get("記憶回饋", "") or ""),
             }
         )
     return items
@@ -1448,11 +1633,20 @@ def run_web_strategy_analysis():
     master_df = build_master_df(daily_all)
 
     training_pool = build_training_pool(weekly_ma_df, master_df)
+    otc_supplement = pd.DataFrame()
+    otc_supplement = build_otc_bullish_supplement_pool(
+        weekly_ma_df, master_df, existing_df=training_pool, min_count=40
+    )
+    if isinstance(otc_supplement, pd.DataFrame) and not otc_supplement.empty:
+        training_pool = pd.concat([training_pool, otc_supplement], ignore_index=True)
+        training_pool = training_pool.drop_duplicates(subset=["股票代號"], keep="first").reset_index(drop=True)
+
     bearish_pool = build_bearish_pool(weekly_ma_df, master_df)
 
-    bullish_display = filter_bullish_for_display(training_pool)
+    bullish_display = build_client_bullish_view(training_pool).head(MAX_RESULTS)
+    bearish_display = build_client_bearish_view(bearish_pool).head(MAX_RESULTS)
     bullish_items = pool_to_api_items(bullish_display, score_col="StrongScore")
-    bearish_items = pool_to_api_items(bearish_pool.head(MAX_RESULTS), score_col="BearishScore")
+    bearish_items = pool_to_api_items(bearish_display, score_col="BearishScore")
 
     warrant_pool = filter_warrant_candidates(training_pool)
     warrant_items = pool_to_api_items(warrant_pool, score_col="StrongScore")
@@ -1477,9 +1671,11 @@ def run_web_strategy_analysis():
         "bearish_count": len(bearish_items),
         "warrant_count": len(warrants),
         "pool_count": len(training_pool),
+        "otc_supplement_count": len(otc_supplement) if isinstance(otc_supplement, pd.DataFrame) else 0,
         "warrant_candidate_count": len(warrant_pool),
         "strategy": {
-            "bullish": "週20MA+趨勢線突破守穩+週量≥1萬（同桌面看多）",
+            "bullish": "CLIENT_BULLISH：training pool + 上櫃補強 + mix 排序（同桌面版）",
+            "bearish": "CLIENT_BEARISH：空方 training pool + 星等排序（同桌面版）",
             "warrant_min_score": WARRANT_MIN_SCORE,
             "warrant_min_stars": WARRANT_MIN_STARS,
             "min_weekly_volume": MIN_WEEKLY_VOLUME,
