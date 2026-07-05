@@ -1733,8 +1733,8 @@ def fetch_tpex_daily_all(date_obj):
 
 
 def collect_daily_history(history_calendar_days=HISTORY_CALENDAR_DAYS, progress_callback=None):
-    """並行抓取上市/上櫃日資料（對齊桌面版 ~460 天）；有 DB 快取後日常只補最新 1～2 天。"""
-    from web_daily_cache import fetch_market_day_cached
+    """並行抓取上市/上櫃日資料（對齊桌面版 ~460 天）；已快取日一次載入，只補缺漏。"""
+    from web_daily_cache import fetch_market_day_cached, history_fetch_workers, preload_cached_history_frames
 
     end_date = get_latest_available_trading_date()
     start_date = end_date - timedelta(days=history_calendar_days)
@@ -1749,49 +1749,56 @@ def collect_daily_history(history_calendar_days=HISTORY_CALENDAR_DAYS, progress_
     if not dates:
         return pd.DataFrame()
 
-    listed_tasks = [(d, "上市", fetch_twse_daily_all) for d in dates]
-    otc_tasks = [(d, "上櫃", fetch_tpex_daily_all) for d in dates]
-    total_tasks = len(listed_tasks) + len(otc_tasks)
-    done = 0
-    lock = threading.Lock()
+    frames, listed_missing, otc_missing = preload_cached_history_frames(dates)
+    cached_done = len(dates) * 2 - len(listed_missing) - len(otc_missing)
+    total_tasks = len(dates) * 2
+    if progress_callback and cached_done > 0:
+        progress_callback(cached_done, total_tasks)
 
-    def _fetch_one(day, market, fetch_fn):
-        nonlocal done
-        trade_date = day.strftime("%Y-%m-%d")
-        df = None
-        try:
-            df = fetch_market_day_cached(trade_date, market, fetch_fn)
-        except Exception:
+    listed_tasks = [(d, "上市", fetch_twse_daily_all) for d in listed_missing]
+    otc_tasks = [(d, "上櫃", fetch_tpex_daily_all) for d in otc_missing]
+    if not listed_tasks and not otc_tasks:
+        if progress_callback:
+            progress_callback(total_tasks, total_tasks)
+    else:
+        done = cached_done
+        lock = threading.Lock()
+
+        def _fetch_one(day, market, fetch_fn):
+            nonlocal done
+            trade_date = day.strftime("%Y-%m-%d")
             df = None
-        with lock:
-            done += 1
-            if progress_callback and (done % 15 == 0 or done == total_tasks):
-                progress_callback(done, total_tasks)
-        return df if isinstance(df, pd.DataFrame) and not df.empty else None
+            try:
+                df = fetch_market_day_cached(trade_date, market, fetch_fn)
+            except Exception:
+                df = None
+            with lock:
+                done += 1
+                if progress_callback and (done % 5 == 0 or done == total_tasks):
+                    progress_callback(done, total_tasks)
+            return df if isinstance(df, pd.DataFrame) and not df.empty else None
 
-    frames = []
+        def _run_market_tasks(tasks, workers):
+            batch_frames = []
+            if not tasks:
+                return batch_frames
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [pool.submit(_fetch_one, d, market, fn) for d, market, fn in tasks]
+                for future in as_completed(futures):
+                    try:
+                        df = future.result()
+                        if isinstance(df, pd.DataFrame) and not df.empty:
+                            batch_frames.append(df)
+                    except Exception:
+                        continue
+            return batch_frames
 
-    def _run_market_tasks(tasks, workers):
-        batch_frames = []
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(_fetch_one, d, market, fn) for d, market, fn in tasks]
-            for future in as_completed(futures):
-                try:
-                    df = future.result()
-                    if isinstance(df, pd.DataFrame) and not df.empty:
-                        batch_frames.append(df)
-                except Exception:
-                    continue
-        return batch_frames
-
-    from web_daily_cache import history_fetch_workers
-
-    listed_workers, otc_workers = history_fetch_workers()
-    with ThreadPoolExecutor(max_workers=2) as outer:
-        listed_future = outer.submit(_run_market_tasks, listed_tasks, listed_workers)
-        otc_future = outer.submit(_run_market_tasks, otc_tasks, otc_workers)
-        frames.extend(listed_future.result())
-        frames.extend(otc_future.result())
+        listed_workers, otc_workers = history_fetch_workers()
+        with ThreadPoolExecutor(max_workers=2) as outer:
+            listed_future = outer.submit(_run_market_tasks, listed_tasks, listed_workers)
+            otc_future = outer.submit(_run_market_tasks, otc_tasks, otc_workers)
+            frames.extend(listed_future.result())
+            frames.extend(otc_future.result())
 
     if not frames:
         return pd.DataFrame()
@@ -2147,10 +2154,10 @@ def run_web_strategy_analysis(include_warrants=True, progress_callback=None):
             "daily_rows": len(daily_all),
         },
         "strategy": {
-            "bullish": "CLIENT_BULLISH＝TRAINING_POOL（週量≥1萬、趨勢突破守穩、StrongScore≥55）",
-            "bullish_keyk": "CLIENT_BULLISH_KEYK＝STRICT_BREAKOUT（本週正式突破趨勢線+盤整）",
-            "bearish": "CLIENT_BEARISH＝BEARISH_TRAINING_POOL（週量≥1萬、跌破守穩、BearishScore≥55）",
-            "bearish_keyk": "CLIENT_BEARISH_KEYK＝BEARISH_KEY_BREAKDOWN（本週正式跌破）",
+            "bullish": "站上週20MA＋兩高點下降趨勢線（中間不穿K）＋突破守穩＋週量≥1萬",
+            "bullish_keyk": "本週突破盤整區且爆大量/天量（STRICT_BREAKOUT）",
+            "bearish": "跌破週20MA＋兩低點上升趨勢線（中間不穿K）＋跌破守穩",
+            "bearish_keyk": "本週正式跌破上升趨勢線",
             "warrant_min_score": WARRANT_MIN_SCORE,
             "warrant_min_stars": WARRANT_MIN_STARS,
             "min_weekly_volume": MIN_WEEKLY_VOLUME,

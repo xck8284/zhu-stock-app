@@ -18,8 +18,8 @@ from web_analysis_store import load_web_analysis_result, save_web_analysis_resul
 logger = logging.getLogger("zhu.analysis")
 TW = ZoneInfo("Asia/Taipei")
 
-STALE_RUNNING_MINUTES_WARM = 15
-STALE_RUNNING_MINUTES_COLD = 90
+STALE_RUNNING_MINUTES_WARM = 45
+STALE_RUNNING_MINUTES_COLD = 120
 WARRANT_PHASE_TIMEOUT_SEC = 90
 
 _scheduler: BackgroundScheduler | None = None
@@ -88,7 +88,13 @@ def is_job_running() -> bool:
     return _job_running
 
 
-def _stale_limit_minutes() -> int:
+def _stale_limit_minutes(meta: dict | None = None) -> int:
+    meta = meta or {}
+    progress = int(meta.get("job_progress") or 0)
+    if progress >= 75:
+        return 180
+    if progress >= 50:
+        return 90
     try:
         from web_daily_cache import count_cached_trading_days
 
@@ -98,7 +104,7 @@ def _stale_limit_minutes() -> int:
     if cached_days >= 280:
         return STALE_RUNNING_MINUTES_WARM
     if cached_days >= 120:
-        return 45
+        return 60
     return STALE_RUNNING_MINUTES_COLD
 
 
@@ -129,7 +135,7 @@ def recover_stale_running_job(meta: dict | None = None) -> dict:
 
     elapsed_min = (tw_now() - started).total_seconds() / 60.0
     meta["job_elapsed_sec"] = int(elapsed_min * 60)
-    stale_limit = _stale_limit_minutes()
+    stale_limit = _stale_limit_minutes(meta)
 
     if elapsed_min >= stale_limit:
         if meta.get("analysis_data_ready"):
@@ -141,7 +147,7 @@ def recover_stale_running_job(meta: dict | None = None) -> dict:
             meta = _set_job_meta(
                 meta,
                 "failed",
-                f"分析未完成（建立 460 天歷史需 10～15 分鐘，已跑 {int(elapsed_min)} 分鐘）。請再按「強制重新啟動」",
+                f"分析未完成（進度 {meta.get('job_progress', 0)}%，已跑 {int(elapsed_min)} 分鐘）。請再按「強制重新啟動」",
             )
         save_web_analysis_result(meta)
         _job_running = False
@@ -168,7 +174,7 @@ def get_running_progress(meta: dict | None = None) -> dict:
         message = str(cached.get("job_message"))
         progress = int(cached.get("job_progress") or 0)
     else:
-        estimated_total = 900 if _stale_limit_minutes() >= 45 else 120
+        estimated_total = 900 if _stale_limit_minutes(meta) >= 45 else 120
         progress = min(97, max(5, int(elapsed_sec / estimated_total * 100)))
         message = "正在抓取台股歷史資料…"
 
@@ -226,7 +232,7 @@ def run_analysis_and_persist(trigger: str = "manual") -> dict:
         running_meta = _set_job_meta(load_web_analysis_result() or {}, "running")
         running_meta["analysis_data_ready"] = False
         running_meta["job_progress"] = 5
-        running_meta["job_message"] = "正在抓取台股歷史資料（對齊桌面版 460 天）…"
+        running_meta["job_message"] = "正在載入歷史快取並補齊缺漏日（460 天）…"
         save_web_analysis_result(running_meta)
         _notify_analysis_complete(running_meta)
 
@@ -234,7 +240,7 @@ def run_analysis_and_persist(trigger: str = "manual") -> dict:
             pct = min(84, max(6, int(done / max(total, 1) * 84)))
             _save_running_job_patch(
                 job_progress=pct,
-                job_message=f"正在抓取台股歷史資料… ({done}/{total})",
+                job_message=f"歷史資料 {done}/{total}（快取命中後只補缺漏）",
             )
 
         result = run_web_strategy_analysis(include_warrants=False, progress_callback=_collect_progress)

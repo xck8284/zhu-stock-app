@@ -59,6 +59,32 @@ def save_daily_cache(db: Session, trade_date: str, market: str, df: pd.DataFrame
     _mem_cache[(trade_date, market)] = df
 
 
+def preload_cached_history_frames(dates: list) -> tuple[list[pd.DataFrame], list[tuple], list[tuple]]:
+    """單次 DB 連線載入已快取日資料，回傳 (frames, 上市待抓, 上櫃待抓)。"""
+    frames: list[pd.DataFrame] = []
+    listed_missing: list[tuple] = []
+    otc_missing: list[tuple] = []
+    db = SessionLocal()
+    try:
+        for day in dates:
+            trade_date = day.strftime("%Y-%m-%d")
+            listed = load_daily_cache(db, trade_date, "上市")
+            if listed is not None and not listed.empty:
+                frames.append(listed)
+                _mem_cache[(trade_date, "上市")] = listed
+            else:
+                listed_missing.append(day)
+            otc = load_daily_cache(db, trade_date, "上櫃")
+            if otc is not None and not otc.empty:
+                frames.append(otc)
+                _mem_cache[(trade_date, "上櫃")] = otc
+            else:
+                otc_missing.append(day)
+    finally:
+        db.close()
+    return frames, listed_missing, otc_missing
+
+
 def count_cached_trading_days() -> int:
     db = SessionLocal()
     try:
