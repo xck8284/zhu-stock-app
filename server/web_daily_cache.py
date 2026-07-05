@@ -76,13 +76,12 @@ def preload_cached_history_frames(dates: list, progress_callback=None):
     """
     兩階段：
     1) 只查 key（不 parse JSON）→ 立刻回報覆蓋率
-    2) 分批 parse 已快取資料
+    2) 合併 parse 成單一 DataFrame（避免 600+ 次 concat 卡死）
     """
-    frames: list[pd.DataFrame] = []
     listed_missing: list = []
     otc_missing: list = []
     if not dates:
-        return frames, listed_missing, otc_missing
+        return [], listed_missing, otc_missing
 
     wanted = {day.strftime("%Y-%m-%d") for day in dates}
     start = min(wanted)
@@ -117,18 +116,31 @@ def preload_cached_history_frames(dates: list, progress_callback=None):
     if progress_callback:
         progress_callback(cached_done, total_tasks)
 
+    all_records: list[dict] = []
     parse_total = len(cached_rows)
     for idx, (trade_date, market, data_json) in enumerate(cached_rows, start=1):
-        df = _parse_cache_row(trade_date, market, data_json)
-        if not df.empty:
-            frames.append(df)
-        if progress_callback and (idx % 25 == 0 or idx == parse_total):
-            # 解析進度映射到 84% 以內
-            mapped = cached_done - parse_total + idx
-            progress_callback(min(mapped, total_tasks), total_tasks)
+        if not data_json or data_json == "[]":
+            _mem_cache[(trade_date, market)] = pd.DataFrame()
+            continue
+        try:
+            records = json.loads(data_json)
+            if records:
+                all_records.extend(records)
+                _mem_cache[(trade_date, market)] = pd.DataFrame(records)
+            else:
+                _mem_cache[(trade_date, market)] = pd.DataFrame()
+        except Exception:
+            _mem_cache[(trade_date, market)] = pd.DataFrame()
+        if progress_callback and (idx % 40 == 0 or idx == parse_total):
+            mapped = min(total_tasks, cached_done - parse_total + idx)
+            progress_callback(mapped, total_tasks)
+
+    frames: list[pd.DataFrame] = []
+    if all_records:
+        frames.append(pd.DataFrame(all_records))
 
     if progress_callback:
-        progress_callback(cached_done, total_tasks)
+        progress_callback(total_tasks, total_tasks)
 
     return frames, listed_missing, otc_missing
 

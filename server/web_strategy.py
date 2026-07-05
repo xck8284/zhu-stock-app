@@ -1813,7 +1813,10 @@ def collect_daily_history(history_calendar_days=HISTORY_CALENDAR_DAYS, progress_
     if not frames:
         return pd.DataFrame()
 
-    out = pd.concat(frames, ignore_index=True)
+    if len(frames) == 1:
+        out = frames[0].copy()
+    else:
+        out = pd.concat(frames, ignore_index=True)
     out["日期"] = pd.to_datetime(out["日期"], errors="coerce")
     out = out.sort_values(["日期", "股票代號"]).reset_index(drop=True)
     return out
