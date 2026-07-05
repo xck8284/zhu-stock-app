@@ -1755,12 +1755,17 @@ def collect_daily_history(history_calendar_days=HISTORY_CALENDAR_DAYS, progress_
     if not dates:
         return pd.DataFrame()
 
-    frames, listed_missing, otc_missing = preload_cached_history_frames(dates)
+    frames, listed_missing, otc_missing = preload_cached_history_frames(
+        dates,
+        progress_callback=lambda done, total: progress_callback and progress_callback(
+            min(int(len(dates) * 2 * 0.5), 330), len(dates) * 2
+        ),
+    )
     cached_done = len(dates) * 2 - len(listed_missing) - len(otc_missing)
     total_tasks = len(dates) * 2
     min_ready = max(1, int(total_tasks * HISTORY_MIN_COVERAGE_RATIO))
 
-    if progress_callback and cached_done > 0:
+    if progress_callback:
         progress_callback(cached_done, total_tasks)
 
     if cached_done >= min_ready:

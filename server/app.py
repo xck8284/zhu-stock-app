@@ -1560,7 +1560,7 @@ def web_public_status():
         **meta,
         "has_data": bool(WEB_BULLISH_DATA or WEB_BEARISH_DATA or WEB_WARRANT_DATA),
         "cron_ready": bool(get_effective_cron_secret()),
-        "engine_version": "2026-07-05c",
+        "engine_version": "2026-07-05d",
     }
 
 

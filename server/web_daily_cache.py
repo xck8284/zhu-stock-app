@@ -59,31 +59,55 @@ def save_daily_cache(db: Session, trade_date: str, market: str, df: pd.DataFrame
     _mem_cache[(trade_date, market)] = df
 
 
-def preload_cached_history_frames(dates: list) -> tuple[list[pd.DataFrame], list[tuple], list[tuple]]:
-    """單次 DB 連線載入已快取日資料，回傳 (frames, 上市待抓, 上櫃待抓)。"""
+def preload_cached_history_frames(dates: list, progress_callback=None):
+    """一次 SQL 載入區間快取，回傳 (frames, 上市待抓, 上櫃待抓)。"""
     frames: list[pd.DataFrame] = []
-    listed_missing: list[tuple] = []
-    otc_missing: list[tuple] = []
+    listed_missing: list = []
+    otc_missing: list = []
+    if not dates:
+        return frames, listed_missing, otc_missing
+
+    wanted = {day.strftime("%Y-%m-%d") for day in dates}
+    start = min(wanted)
+    end = max(wanted)
+    cached_keys: set[tuple[str, str]] = set()
+
     db = SessionLocal()
     try:
+        rows = (
+            db.query(DailyMarketCache.trade_date, DailyMarketCache.market, DailyMarketCache.data_json)
+            .filter(DailyMarketCache.trade_date >= start, DailyMarketCache.trade_date <= end)
+            .all()
+        )
+        total_rows = len(rows)
+        for idx, (trade_date, market, data_json) in enumerate(rows, start=1):
+            if trade_date not in wanted:
+                continue
+            key = (trade_date, market)
+            cached_keys.add(key)
+            df = pd.DataFrame()
+            if data_json:
+                try:
+                    records = json.loads(data_json)
+                    if records:
+                        df = pd.DataFrame(records)
+                except Exception:
+                    df = pd.DataFrame()
+            _mem_cache[key] = df
+            if not df.empty:
+                frames.append(df)
+            if progress_callback and idx % 50 == 0:
+                progress_callback(idx, max(total_rows, 1))
+
         for day in dates:
             trade_date = day.strftime("%Y-%m-%d")
-            listed = load_daily_cache(db, trade_date, "上市")
-            if listed is not None:
-                if not listed.empty:
-                    frames.append(listed)
-                _mem_cache[(trade_date, "上市")] = listed
-            else:
+            if (trade_date, "上市") not in cached_keys:
                 listed_missing.append(day)
-            otc = load_daily_cache(db, trade_date, "上櫃")
-            if otc is not None:
-                if not otc.empty:
-                    frames.append(otc)
-                _mem_cache[(trade_date, "上櫃")] = otc
-            else:
+            if (trade_date, "上櫃") not in cached_keys:
                 otc_missing.append(day)
     finally:
         db.close()
+
     return frames, listed_missing, otc_missing
 
 
