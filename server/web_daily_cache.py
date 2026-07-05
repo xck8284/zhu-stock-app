@@ -59,8 +59,25 @@ def save_daily_cache(db: Session, trade_date: str, market: str, df: pd.DataFrame
     _mem_cache[(trade_date, market)] = df
 
 
+def _parse_cache_row(trade_date: str, market: str, data_json: str | None) -> pd.DataFrame:
+    df = pd.DataFrame()
+    if data_json:
+        try:
+            records = json.loads(data_json)
+            if records:
+                df = pd.DataFrame(records)
+        except Exception:
+            df = pd.DataFrame()
+    _mem_cache[(trade_date, market)] = df
+    return df
+
+
 def preload_cached_history_frames(dates: list, progress_callback=None):
-    """一次 SQL 載入區間快取，回傳 (frames, 上市待抓, 上櫃待抓)。"""
+    """
+    兩階段：
+    1) 只查 key（不 parse JSON）→ 立刻回報覆蓋率
+    2) 分批 parse 已快取資料
+    """
     frames: list[pd.DataFrame] = []
     listed_missing: list = []
     otc_missing: list = []
@@ -70,34 +87,22 @@ def preload_cached_history_frames(dates: list, progress_callback=None):
     wanted = {day.strftime("%Y-%m-%d") for day in dates}
     start = min(wanted)
     end = max(wanted)
-    cached_keys: set[tuple[str, str]] = set()
+    total_tasks = len(dates) * 2
 
     db = SessionLocal()
+    cached_rows: list[tuple[str, str, str | None]] = []
+    cached_keys: set[tuple[str, str]] = set()
     try:
         rows = (
             db.query(DailyMarketCache.trade_date, DailyMarketCache.market, DailyMarketCache.data_json)
             .filter(DailyMarketCache.trade_date >= start, DailyMarketCache.trade_date <= end)
             .all()
         )
-        total_rows = len(rows)
-        for idx, (trade_date, market, data_json) in enumerate(rows, start=1):
+        for trade_date, market, data_json in rows:
             if trade_date not in wanted:
                 continue
-            key = (trade_date, market)
-            cached_keys.add(key)
-            df = pd.DataFrame()
-            if data_json:
-                try:
-                    records = json.loads(data_json)
-                    if records:
-                        df = pd.DataFrame(records)
-                except Exception:
-                    df = pd.DataFrame()
-            _mem_cache[key] = df
-            if not df.empty:
-                frames.append(df)
-            if progress_callback and idx % 50 == 0:
-                progress_callback(idx, max(total_rows, 1))
+            cached_keys.add((trade_date, market))
+            cached_rows.append((trade_date, market, data_json))
 
         for day in dates:
             trade_date = day.strftime("%Y-%m-%d")
@@ -107,6 +112,23 @@ def preload_cached_history_frames(dates: list, progress_callback=None):
                 otc_missing.append(day)
     finally:
         db.close()
+
+    cached_done = total_tasks - len(listed_missing) - len(otc_missing)
+    if progress_callback:
+        progress_callback(cached_done, total_tasks)
+
+    parse_total = len(cached_rows)
+    for idx, (trade_date, market, data_json) in enumerate(cached_rows, start=1):
+        df = _parse_cache_row(trade_date, market, data_json)
+        if not df.empty:
+            frames.append(df)
+        if progress_callback and (idx % 25 == 0 or idx == parse_total):
+            # 解析進度映射到 84% 以內
+            mapped = cached_done - parse_total + idx
+            progress_callback(min(mapped, total_tasks), total_tasks)
+
+    if progress_callback:
+        progress_callback(cached_done, total_tasks)
 
     return frames, listed_missing, otc_missing
 
