@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -20,6 +21,7 @@ TW = ZoneInfo("Asia/Taipei")
 
 STALE_RUNNING_MINUTES_WARM = 45
 STALE_RUNNING_MINUTES_COLD = 120
+HISTORY_COVERAGE_SKIP_RATIO = 0.92
 WARRANT_PHASE_TIMEOUT_SEC = 90
 
 _scheduler: BackgroundScheduler | None = None
@@ -118,6 +120,19 @@ def _save_running_job_patch(**fields) -> dict:
     return meta
 
 
+def reset_analysis_job_state(error: str = "") -> dict:
+    """強制重置：釋放執行緒鎖並將 DB 中 running 標為 failed。"""
+    global _job_running
+
+    _job_running = False
+    cached = dict(load_web_analysis_result() or {})
+    if cached.get("job_status") == "running":
+        cached = _set_job_meta(cached, "failed", error or "分析已重置")
+        save_web_analysis_result(cached)
+        _notify_analysis_complete(cached)
+    return cached
+
+
 def recover_stale_running_job(meta: dict | None = None) -> dict:
     """若 running 超過時限，重置狀態；未完成的新分析不得偽裝成「分析完成」。"""
     global _job_running
@@ -137,18 +152,27 @@ def recover_stale_running_job(meta: dict | None = None) -> dict:
     meta["job_elapsed_sec"] = int(elapsed_min * 60)
     stale_limit = _stale_limit_minutes(meta)
 
-    if elapsed_min >= stale_limit:
+    msg = str(meta.get("job_message") or "")
+    stuck_at_history = False
+    match = re.search(r"(\d+)\s*/\s*(\d+)", msg)
+    if match:
+        done_n, total_n = int(match.group(1)), int(match.group(2))
+        if total_n > 0 and done_n / total_n >= HISTORY_COVERAGE_SKIP_RATIO and elapsed_min >= 5:
+            stuck_at_history = True
+
+    if stuck_at_history or elapsed_min >= stale_limit:
         if meta.get("analysis_data_ready"):
             meta["job_status"] = "idle"
             meta["job_error"] = ""
             meta["job_message"] = "分析完成"
             meta["job_progress"] = 100
         else:
-            meta = _set_job_meta(
-                meta,
-                "failed",
-                f"分析未完成（進度 {meta.get('job_progress', 0)}%，已跑 {int(elapsed_min)} 分鐘）。請再按「強制重新啟動」",
+            reason = (
+                "歷史快取已足夠（≥92%）但前次分析卡住，請再按「強制重新啟動」"
+                if stuck_at_history
+                else f"分析未完成（進度 {meta.get('job_progress', 0)}%，已跑 {int(elapsed_min)} 分鐘）。請再按「強制重新啟動」"
             )
+            meta = _set_job_meta(meta, "failed", reason)
         save_web_analysis_result(meta)
         _job_running = False
         return meta
@@ -245,7 +269,15 @@ def run_analysis_and_persist(trigger: str = "manual") -> dict:
                 msg += "（快取命中後只補缺漏）"
             _save_running_job_patch(job_progress=pct, job_message=msg)
 
-        result = run_web_strategy_analysis(include_warrants=False, progress_callback=_collect_progress)
+        def _on_phase(phase):
+            if phase == "strategy":
+                _save_running_job_patch(job_progress=86, job_message="歷史快取完成，正在計算選股…")
+
+        result = run_web_strategy_analysis(
+            include_warrants=False,
+            progress_callback=_collect_progress,
+            phase_callback=_on_phase,
+        )
         warrant_items = result.pop("_warrant_items", [])
 
         prev = load_web_analysis_result() or {}

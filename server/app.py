@@ -1607,14 +1607,11 @@ def web_run_analysis(
 
     _reload_web_analysis_from_db()
 
-    if force and WEB_ANALYSIS_META.get("job_status") == "running":
-        from analysis_scheduler import _set_job_meta
-        from web_analysis_store import load_web_analysis_result, save_web_analysis_result
+    if force:
+        from analysis_scheduler import reset_analysis_job_state
 
-        cached = load_web_analysis_result() or {}
-        cached = _set_job_meta(cached, "failed", "使用者強制重新啟動")
-        save_web_analysis_result(cached)
-        _apply_web_analysis_result(cached)
+        reset_analysis_job_state("使用者強制重新啟動")
+        _reload_web_analysis_from_db()
 
     if WEB_ANALYSIS_META.get("job_status") == "running":
         return {

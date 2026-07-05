@@ -2071,7 +2071,7 @@ def build_warrants_from_bullish(bullish_items):
     return warrants
 
 
-def run_web_strategy_analysis(include_warrants=True, progress_callback=None):
+def run_web_strategy_analysis(include_warrants=True, progress_callback=None, phase_callback=None):
     daily_all = collect_daily_history(progress_callback=progress_callback)
     if daily_all.empty:
         return {
@@ -2095,6 +2095,12 @@ def run_web_strategy_analysis(include_warrants=True, progress_callback=None):
                 "warrant_days": f"{WARRANT_MIN_DAYS}-{WARRANT_MAX_DAYS}",
             },
         }
+
+    if phase_callback:
+        try:
+            phase_callback("strategy")
+        except Exception:
+            pass
 
     weekly_df = build_weekly_k_from_daily(daily_all)
     weekly_ma_df = calculate_weekly_indicators(weekly_df)
