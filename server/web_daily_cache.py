@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -118,22 +119,30 @@ def preload_cached_history_frames(dates: list, progress_callback=None):
 
     all_records: list[dict] = []
     parse_total = len(cached_rows)
-    for idx, (trade_date, market, data_json) in enumerate(cached_rows, start=1):
+
+    def _parse_row(row):
+        trade_date, market, data_json = row
         if not data_json or data_json == "[]":
-            _mem_cache[(trade_date, market)] = pd.DataFrame()
-            continue
+            return trade_date, market, []
         try:
             records = json.loads(data_json)
+            return trade_date, market, records if isinstance(records, list) else []
+        except Exception:
+            return trade_date, market, []
+
+    workers = 4
+    done_parse = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_parse_row, row) for row in cached_rows]
+        for future in as_completed(futures):
+            trade_date, market, records = future.result()
             if records:
                 all_records.extend(records)
-                _mem_cache[(trade_date, market)] = pd.DataFrame(records)
-            else:
-                _mem_cache[(trade_date, market)] = pd.DataFrame()
-        except Exception:
-            _mem_cache[(trade_date, market)] = pd.DataFrame()
-        if progress_callback and (idx % 40 == 0 or idx == parse_total):
-            mapped = min(total_tasks, cached_done - parse_total + idx)
-            progress_callback(mapped, total_tasks)
+            _mem_cache[(trade_date, market)] = pd.DataFrame(records) if records else pd.DataFrame()
+            done_parse += 1
+            if progress_callback and (done_parse % 40 == 0 or done_parse == parse_total):
+                mapped = min(total_tasks, max(cached_done, done_parse))
+                progress_callback(mapped, total_tasks)
 
     frames: list[pd.DataFrame] = []
     if all_records:
