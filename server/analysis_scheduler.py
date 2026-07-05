@@ -157,8 +157,11 @@ def recover_stale_running_job(meta: dict | None = None) -> dict:
     match = re.search(r"(\d+)\s*/\s*(\d+)", msg)
     if match:
         done_n, total_n = int(match.group(1)), int(match.group(2))
-        if total_n > 0 and done_n / total_n >= HISTORY_COVERAGE_SKIP_RATIO and elapsed_min >= 3:
-            stuck_at_history = True
+        if "解析歷史快取" in msg:
+            # 解析 600+ 天 JSON 在 Render 上常需 10～20 分鐘，勿 3 分鐘就判死
+            stuck_at_history = elapsed_min >= 25 and done_n < total_n
+        elif total_n > 0 and done_n / total_n >= HISTORY_COVERAGE_SKIP_RATIO:
+            stuck_at_history = elapsed_min >= 20
 
     if stuck_at_history or elapsed_min >= stale_limit:
         if meta.get("analysis_data_ready"):
@@ -260,13 +263,20 @@ def run_analysis_and_persist(trigger: str = "manual") -> dict:
         save_web_analysis_result(running_meta)
         _notify_analysis_complete(running_meta)
 
-        def _collect_progress(done, total):
-            pct = min(84, max(6, int(done / max(total, 1) * 84)))
-            msg = f"歷史資料 {done}/{total}"
-            if done >= int(total * 0.92):
-                msg += "（覆蓋率足夠，即將開始選股）"
+        def _collect_progress(done, total, message=None):
+            if message and "解析歷史快取" in message:
+                pct = min(84, max(30, 30 + int(done / max(total, 1) * 54)))
+                msg = message
+            elif message:
+                pct = min(84, max(6, int(done / max(total, 1) * 84)))
+                msg = message
             else:
-                msg += "（快取命中後只補缺漏）"
+                pct = min(84, max(6, int(done / max(total, 1) * 84)))
+                msg = f"歷史資料 {done}/{total}"
+                if done >= int(total * HISTORY_COVERAGE_SKIP_RATIO):
+                    msg += "（覆蓋率足夠，即將開始選股）"
+                else:
+                    msg += "（快取命中後只補缺漏）"
             _save_running_job_patch(job_progress=pct, job_message=msg)
 
         def _on_phase(phase):

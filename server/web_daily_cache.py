@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -76,8 +76,9 @@ def _parse_cache_row(trade_date: str, market: str, data_json: str | None) -> pd.
 def preload_cached_history_frames(dates: list, progress_callback=None):
     """
     兩階段：
-    1) 只查 key（不 parse JSON）→ 立刻回報覆蓋率
-    2) 合併 parse 成單一 DataFrame（避免 600+ 次 concat 卡死）
+    1) 只查 key（不載入 JSON）→ 回報快取覆蓋率
+    2) 分批載入 JSON 並 parse（避免一次把 600+ 天 JSON 全塞進記憶體）
+    progress_callback(done, total, message=None)
     """
     listed_missing: list = []
     otc_missing: list = []
@@ -90,19 +91,16 @@ def preload_cached_history_frames(dates: list, progress_callback=None):
     total_tasks = len(dates) * 2
 
     db = SessionLocal()
-    cached_rows: list[tuple[str, str, str | None]] = []
     cached_keys: set[tuple[str, str]] = set()
     try:
         rows = (
-            db.query(DailyMarketCache.trade_date, DailyMarketCache.market, DailyMarketCache.data_json)
+            db.query(DailyMarketCache.trade_date, DailyMarketCache.market)
             .filter(DailyMarketCache.trade_date >= start, DailyMarketCache.trade_date <= end)
             .all()
         )
-        for trade_date, market, data_json in rows:
-            if trade_date not in wanted:
-                continue
-            cached_keys.add((trade_date, market))
-            cached_rows.append((trade_date, market, data_json))
+        for trade_date, market in rows:
+            if trade_date in wanted:
+                cached_keys.add((trade_date, market))
 
         for day in dates:
             trade_date = day.strftime("%Y-%m-%d")
@@ -115,41 +113,75 @@ def preload_cached_history_frames(dates: list, progress_callback=None):
 
     cached_done = total_tasks - len(listed_missing) - len(otc_missing)
     if progress_callback:
-        progress_callback(cached_done, total_tasks)
+        progress_callback(
+            cached_done,
+            total_tasks,
+            f"快取覆蓋 {cached_done}/{total_tasks}，開始解析歷史資料…",
+        )
 
-    all_records: list[dict] = []
-    parse_total = len(cached_rows)
+    keys_to_parse: list[tuple[str, str]] = []
+    for day in dates:
+        trade_date = day.strftime("%Y-%m-%d")
+        for market in ("上市", "上櫃"):
+            if (trade_date, market) in cached_keys:
+                keys_to_parse.append((trade_date, market))
 
-    def _parse_row(row):
-        trade_date, market, data_json = row
-        if not data_json or data_json == "[]":
-            return trade_date, market, []
-        try:
-            records = json.loads(data_json)
-            return trade_date, market, records if isinstance(records, list) else []
-        except Exception:
-            return trade_date, market, []
-
-    workers = 4
-    done_parse = 0
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(_parse_row, row) for row in cached_rows]
-        for future in as_completed(futures):
-            trade_date, market, records = future.result()
-            if records:
-                all_records.extend(records)
-            _mem_cache[(trade_date, market)] = pd.DataFrame(records) if records else pd.DataFrame()
-            done_parse += 1
-            if progress_callback and (done_parse % 40 == 0 or done_parse == parse_total):
-                mapped = min(total_tasks, max(cached_done, done_parse))
-                progress_callback(mapped, total_tasks)
-
+    parse_total = len(keys_to_parse)
     frames: list[pd.DataFrame] = []
-    if all_records:
-        frames.append(pd.DataFrame(all_records))
+    batch_size = 40
+
+    for batch_start in range(0, parse_total, batch_size):
+        batch_keys = keys_to_parse[batch_start : batch_start + batch_size]
+        batch_dates = list({trade_date for trade_date, _ in batch_keys})
+
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(DailyMarketCache.trade_date, DailyMarketCache.market, DailyMarketCache.data_json)
+                .filter(
+                    DailyMarketCache.trade_date.in_(batch_dates),
+                    DailyMarketCache.market.in_(["上市", "上櫃"]),
+                )
+                .all()
+            )
+            row_map = {(trade_date, market): data_json for trade_date, market, data_json in rows}
+        finally:
+            db.close()
+
+        batch_records: list[dict] = []
+
+        def _parse_key(key):
+            trade_date, market = key
+            data_json = row_map.get(key)
+            records: list = []
+            if data_json and data_json != "[]":
+                try:
+                    parsed = json.loads(data_json)
+                    if isinstance(parsed, list):
+                        records = parsed
+                except Exception:
+                    records = []
+            return trade_date, market, records
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for trade_date, market, records in pool.map(_parse_key, batch_keys):
+                _mem_cache[(trade_date, market)] = pd.DataFrame(records) if records else pd.DataFrame()
+                if records:
+                    batch_records.extend(records)
+
+        if batch_records:
+            frames.append(pd.DataFrame(batch_records))
+
+        parsed = min(parse_total, batch_start + len(batch_keys))
+        if progress_callback:
+            progress_callback(
+                parsed,
+                parse_total,
+                f"解析歷史快取 {parsed}/{parse_total}（完成後開始選股）",
+            )
 
     if progress_callback:
-        progress_callback(total_tasks, total_tasks)
+        progress_callback(total_tasks, total_tasks, "歷史快取完成，準備選股…")
 
     return frames, listed_missing, otc_missing
 
