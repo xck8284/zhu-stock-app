@@ -157,7 +157,7 @@ def recover_stale_running_job(meta: dict | None = None) -> dict:
     match = re.search(r"(\d+)\s*/\s*(\d+)", msg)
     if match:
         done_n, total_n = int(match.group(1)), int(match.group(2))
-        if total_n > 0 and done_n / total_n >= HISTORY_COVERAGE_SKIP_RATIO and elapsed_min >= 5:
+        if total_n > 0 and done_n / total_n >= HISTORY_COVERAGE_SKIP_RATIO and elapsed_min >= 3:
             stuck_at_history = True
 
     if stuck_at_history or elapsed_min >= stale_limit:
