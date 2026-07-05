@@ -238,10 +238,12 @@ def run_analysis_and_persist(trigger: str = "manual") -> dict:
 
         def _collect_progress(done, total):
             pct = min(84, max(6, int(done / max(total, 1) * 84)))
-            _save_running_job_patch(
-                job_progress=pct,
-                job_message=f"歷史資料 {done}/{total}（快取命中後只補缺漏）",
-            )
+            msg = f"歷史資料 {done}/{total}"
+            if done >= int(total * 0.92):
+                msg += "（覆蓋率足夠，即將開始選股）"
+            else:
+                msg += "（快取命中後只補缺漏）"
+            _save_running_job_patch(job_progress=pct, job_message=msg)
 
         result = run_web_strategy_analysis(include_warrants=False, progress_callback=_collect_progress)
         warrant_items = result.pop("_warrant_items", [])

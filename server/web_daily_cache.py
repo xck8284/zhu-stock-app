@@ -33,7 +33,7 @@ def load_daily_cache(db: Session, trade_date: str, market: str) -> pd.DataFrame 
     try:
         records = json.loads(row.data_json)
         if not records:
-            return None
+            return pd.DataFrame()
         return pd.DataFrame(records)
     except Exception:
         return None
@@ -69,14 +69,16 @@ def preload_cached_history_frames(dates: list) -> tuple[list[pd.DataFrame], list
         for day in dates:
             trade_date = day.strftime("%Y-%m-%d")
             listed = load_daily_cache(db, trade_date, "上市")
-            if listed is not None and not listed.empty:
-                frames.append(listed)
+            if listed is not None:
+                if not listed.empty:
+                    frames.append(listed)
                 _mem_cache[(trade_date, "上市")] = listed
             else:
                 listed_missing.append(day)
             otc = load_daily_cache(db, trade_date, "上櫃")
-            if otc is not None and not otc.empty:
-                frames.append(otc)
+            if otc is not None:
+                if not otc.empty:
+                    frames.append(otc)
                 _mem_cache[(trade_date, "上櫃")] = otc
             else:
                 otc_missing.append(day)
@@ -95,23 +97,43 @@ def count_cached_trading_days() -> int:
         db.close()
 
 
+def save_empty_daily_cache(db: Session, trade_date: str, market: str) -> None:
+    """標記無資料日，避免每次分析重試卡死。"""
+    payload = "[]"
+    with _write_lock:
+        row = (
+            db.query(DailyMarketCache)
+            .filter(DailyMarketCache.trade_date == trade_date, DailyMarketCache.market == market)
+            .first()
+        )
+        if row is None:
+            row = DailyMarketCache(trade_date=trade_date, market=market, data_json=payload, updated_at=_now_utc())
+            db.add(row)
+        else:
+            row.data_json = payload
+            row.updated_at = _now_utc()
+        db.commit()
+    _mem_cache[(trade_date, market)] = pd.DataFrame()
+
+
 def fetch_market_day_cached(trade_date: str, market: str, fetch_fn):
     mem_key = (trade_date, market)
     cached_mem = _mem_cache.get(mem_key)
-    if cached_mem is not None and not cached_mem.empty:
-        return cached_mem
+    if cached_mem is not None:
+        return cached_mem if not cached_mem.empty else None
 
     db = SessionLocal()
     try:
         cached = load_daily_cache(db, trade_date, market)
-        if cached is not None and not cached.empty:
+        if cached is not None:
             _mem_cache[mem_key] = cached
-            return cached
+            return cached if not cached.empty else None
         day_obj = datetime.strptime(trade_date, "%Y-%m-%d")
         df = fetch_fn(day_obj)
         if isinstance(df, pd.DataFrame) and not df.empty:
             save_daily_cache(db, trade_date, market, df)
             return df
+        save_empty_daily_cache(db, trade_date, market)
         return None
     finally:
         db.close()

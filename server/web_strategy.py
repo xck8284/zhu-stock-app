@@ -62,6 +62,8 @@ MAX_WARRANT_RESULTS = 100
 MAX_WARRANT_STOCKS = 12
 # 對齊桌面版：history_end - 460 天，約 60 週（LOOKBACK_WEEKS=60）
 HISTORY_CALENDAR_DAYS = 460
+HISTORY_MIN_COVERAGE_RATIO = 0.92
+HISTORY_FETCH_TASK_TIMEOUT = 35
 FETCH_WORKERS = 32
 HTTP_TIMEOUT = 12
 
@@ -1690,7 +1692,9 @@ def fetch_tpex_daily_all(date_obj):
     ]
     for url, params in html_sources:
         try:
-            response = _http_get(url, params=params, timeout=12)
+            response = _http_get(url, params=params, timeout=10)
+            if len(response.text) > 2_000_000:
+                continue
             tables = pd.read_html(StringIO(response.text))
             for tbl in tables:
                 if isinstance(tbl.columns, pd.MultiIndex):
@@ -1734,6 +1738,8 @@ def fetch_tpex_daily_all(date_obj):
 
 def collect_daily_history(history_calendar_days=HISTORY_CALENDAR_DAYS, progress_callback=None):
     """並行抓取上市/上櫃日資料（對齊桌面版 ~460 天）；已快取日一次載入，只補缺漏。"""
+    from concurrent.futures import TimeoutError as FuturesTimeout
+
     from web_daily_cache import fetch_market_day_cached, history_fetch_workers, preload_cached_history_frames
 
     end_date = get_latest_available_trading_date()
@@ -1752,15 +1758,18 @@ def collect_daily_history(history_calendar_days=HISTORY_CALENDAR_DAYS, progress_
     frames, listed_missing, otc_missing = preload_cached_history_frames(dates)
     cached_done = len(dates) * 2 - len(listed_missing) - len(otc_missing)
     total_tasks = len(dates) * 2
+    min_ready = max(1, int(total_tasks * HISTORY_MIN_COVERAGE_RATIO))
+
     if progress_callback and cached_done > 0:
         progress_callback(cached_done, total_tasks)
 
-    listed_tasks = [(d, "上市", fetch_twse_daily_all) for d in listed_missing]
-    otc_tasks = [(d, "上櫃", fetch_tpex_daily_all) for d in otc_missing]
-    if not listed_tasks and not otc_tasks:
+    if cached_done >= min_ready:
         if progress_callback:
             progress_callback(total_tasks, total_tasks)
     else:
+        listed_tasks = [(d, "上市", fetch_twse_daily_all) for d in listed_missing]
+        otc_tasks = [(d, "上櫃", fetch_tpex_daily_all) for d in otc_missing]
+        all_tasks = listed_tasks + otc_tasks
         done = cached_done
         lock = threading.Lock()
 
@@ -1769,36 +1778,40 @@ def collect_daily_history(history_calendar_days=HISTORY_CALENDAR_DAYS, progress_
             trade_date = day.strftime("%Y-%m-%d")
             df = None
             try:
-                df = fetch_market_day_cached(trade_date, market, fetch_fn)
-            except Exception:
+                with ThreadPoolExecutor(max_workers=1) as single:
+                    future = single.submit(fetch_market_day_cached, trade_date, market, fetch_fn)
+                    df = future.result(timeout=HISTORY_FETCH_TASK_TIMEOUT)
+            except (FuturesTimeout, Exception):
                 df = None
             with lock:
                 done += 1
-                if progress_callback and (done % 5 == 0 or done == total_tasks):
-                    progress_callback(done, total_tasks)
+                if progress_callback:
+                    progress_callback(min(done, total_tasks), total_tasks)
             return df if isinstance(df, pd.DataFrame) and not df.empty else None
 
-        def _run_market_tasks(tasks, workers):
+        def _run_market_tasks(tasks):
             batch_frames = []
             if not tasks:
                 return batch_frames
+            _, otc_workers = history_fetch_workers()
+            workers = min(2, max(1, otc_workers))
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = [pool.submit(_fetch_one, d, market, fn) for d, market, fn in tasks]
                 for future in as_completed(futures):
+                    with lock:
+                        if done >= min_ready:
+                            break
                     try:
-                        df = future.result()
+                        df = future.result(timeout=HISTORY_FETCH_TASK_TIMEOUT + 5)
                         if isinstance(df, pd.DataFrame) and not df.empty:
                             batch_frames.append(df)
                     except Exception:
                         continue
             return batch_frames
 
-        listed_workers, otc_workers = history_fetch_workers()
-        with ThreadPoolExecutor(max_workers=2) as outer:
-            listed_future = outer.submit(_run_market_tasks, listed_tasks, listed_workers)
-            otc_future = outer.submit(_run_market_tasks, otc_tasks, otc_workers)
-            frames.extend(listed_future.result())
-            frames.extend(otc_future.result())
+        frames.extend(_run_market_tasks(all_tasks))
+        if progress_callback:
+            progress_callback(total_tasks, total_tasks)
 
     if not frames:
         return pd.DataFrame()
