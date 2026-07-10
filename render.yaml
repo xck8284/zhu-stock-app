@@ -17,10 +17,3 @@ services:
       - key: AUTO_ANALYSIS_MINUTE
         value: "5"
 
-  - type: cron
-    name: zhu-stock-daily-analysis
-    runtime: image
-    schedule: "5 8 * * 1-5"
-    dockerCommand: |
-      curl -fsS -X POST "https://zhu-stock-app.onrender.com/web/cron/daily-analysis" \
-        -H "X-Cron-Secret: ${SECRET_KEY}"
