@@ -165,7 +165,6 @@ def preload_cached_history_frames(dates: list, progress_callback=None):
 
         with ThreadPoolExecutor(max_workers=4) as pool:
             for trade_date, market, records in pool.map(_parse_key, batch_keys):
-                _mem_cache[(trade_date, market)] = pd.DataFrame(records) if records else pd.DataFrame()
                 if records:
                     batch_records.extend(records)
 
