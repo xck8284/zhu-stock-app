@@ -566,6 +566,11 @@ def root():
     return {"success": True, "message": "ZHU STOCK PLATFORM API is running", "version": "2.0.0"}
 
 
+@app.head("/")
+def root_healthcheck():
+    return {}
+
+
 @app.post("/auth/send-register-code")
 def auth_send_register_code(data: SendRegisterCodeRequest, db: Session = Depends(get_db)):
     email = normalize_email(data.email)
