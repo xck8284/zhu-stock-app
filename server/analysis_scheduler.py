@@ -389,7 +389,11 @@ def stop_analysis_scheduler() -> None:
 
 
 def maybe_refresh_on_startup() -> None:
+    global _job_running
     cached = load_web_analysis_result()
+    if (cached or {}).get("job_status") == "running" and not _job_running:
+        cached = _set_job_meta(cached, "failed", "服務重啟，正在自動接續分析")
+        save_web_analysis_result(cached)
     if (cached or {}).get("job_status") == "failed" or should_refresh_analysis(cached):
         logger.info("[analysis] startup refresh scheduled")
         run_analysis_in_background(trigger="startup")
