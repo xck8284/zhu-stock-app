@@ -13,6 +13,7 @@ from __future__ import annotations
 import gc
 import json
 import re
+import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -1045,7 +1046,9 @@ def build_training_pool(weekly_ma_df, master_df, trend_cache=None):
     df["週結算日期"] = pd.to_datetime(df["週結算日期"])
     df = df.sort_values(["股票代號", "週結算日期"]).reset_index(drop=True)
 
-    for code, grp in df.groupby("股票代號"):
+    for stock_index, (code, grp) in enumerate(df.groupby("股票代號")):
+        if stock_index % 10 == 0:
+            time.sleep(0.002)
         grp = grp.sort_values("週結算日期").reset_index(drop=True).copy()
         latest = grp.iloc[-1]
         if pd.isna(latest["週20MA"]) or pd.isna(latest["週成交量(張)"]):
@@ -1100,7 +1103,9 @@ def build_bearish_pool(weekly_ma_df, master_df, trend_cache=None):
     df["週結算日期"] = pd.to_datetime(df["週結算日期"])
     df = df.sort_values(["股票代號", "週結算日期"]).reset_index(drop=True)
 
-    for code, grp in df.groupby("股票代號"):
+    for stock_index, (code, grp) in enumerate(df.groupby("股票代號")):
+        if stock_index % 10 == 0:
+            time.sleep(0.002)
         grp = grp.sort_values("週結算日期").reset_index(drop=True).copy()
         latest = grp.iloc[-1]
         if pd.isna(latest["週20MA"]) or pd.isna(latest["週成交量(張)"]):
@@ -1342,7 +1347,9 @@ def build_strict_breakout_sheet(weekly_ma_df, master_df, trend_cache=None):
     df = df.sort_values(["股票代號", "週結算日期"]).reset_index(drop=True)
     industry_map = master_df[["股票代號", "產業別"]].drop_duplicates(subset=["股票代號"]).copy()
     rows = []
-    for code, grp in df.groupby("股票代號"):
+    for stock_index, (code, grp) in enumerate(df.groupby("股票代號")):
+        if stock_index % 10 == 0:
+            time.sleep(0.002)
         grp = grp.sort_values("週結算日期").reset_index(drop=True).copy()
         latest = grp.iloc[-1]
         if pd.isna(latest["週20MA"]) or latest["週收盤價"] < latest["週20MA"]:
@@ -1390,7 +1397,9 @@ def build_bearish_key_breakdown_sheet(weekly_ma_df, master_df, trend_cache=None)
     df = df.sort_values(["股票代號", "週結算日期"]).reset_index(drop=True)
     industry_map = master_df[["股票代號", "產業別"]].drop_duplicates(subset=["股票代號"]).copy()
     rows = []
-    for code, grp in df.groupby("股票代號"):
+    for stock_index, (code, grp) in enumerate(df.groupby("股票代號")):
+        if stock_index % 10 == 0:
+            time.sleep(0.002)
         grp = grp.sort_values("週結算日期").reset_index(drop=True).copy()
         latest = grp.iloc[-1]
         if pd.isna(latest["週20MA"]) or latest["週收盤價"] >= latest["週20MA"]:
