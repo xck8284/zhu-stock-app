@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import re
 import threading
@@ -1817,6 +1818,8 @@ def collect_daily_history(history_calendar_days=HISTORY_CALENDAR_DAYS, progress_
         out = frames[0].copy()
     else:
         out = pd.concat(frames, ignore_index=True)
+    frames.clear()
+    gc.collect()
     out["日期"] = pd.to_datetime(out["日期"], errors="coerce")
     out = out.sort_values(["日期", "股票代號"]).reset_index(drop=True)
     return out
