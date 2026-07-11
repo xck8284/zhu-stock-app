@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
 
     DATABASE_URL: str = "sqlite:///./zhu_stock.db"
+    # Large daily market history must not consume the membership database quota.
+    CACHE_DATABASE_URL: str = "sqlite:///./zhu_stock_cache.db"
 
     CREATOR_ADMIN_EMAIL: str = "admin@zhustock.local"
     CREATOR_ADMIN_USERNAME: str = "admin"

@@ -13,8 +13,10 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from config import settings
-from database import SessionLocal
-from models import DailyMarketCache
+from cache_database import CacheBase, CacheSessionLocal, cache_engine
+from cache_models import DailyMarketCache
+
+CacheBase.metadata.create_all(bind=cache_engine)
 
 _write_lock = threading.Lock()
 _mem_cache: dict[tuple[str, str], pd.DataFrame] = {}
@@ -104,7 +106,7 @@ def preload_cached_history_frames(dates: list, progress_callback=None):
     end = max(wanted)
     total_tasks = len(dates) * 2
 
-    db = SessionLocal()
+    db = CacheSessionLocal()
     cached_keys: set[tuple[str, str]] = set()
     try:
         rows = (
@@ -148,7 +150,7 @@ def preload_cached_history_frames(dates: list, progress_callback=None):
         batch_keys = keys_to_parse[batch_start : batch_start + batch_size]
         batch_dates = list({trade_date for trade_date, _ in batch_keys})
 
-        db = SessionLocal()
+        db = CacheSessionLocal()
         try:
             rows = (
                 db.query(DailyMarketCache.trade_date, DailyMarketCache.market, DailyMarketCache.data_json)
@@ -200,7 +202,7 @@ def preload_cached_history_frames(dates: list, progress_callback=None):
 
 
 def count_cached_trading_days() -> int:
-    db = SessionLocal()
+    db = CacheSessionLocal()
     try:
         return int(db.query(DailyMarketCache.trade_date).distinct().count())
     except Exception:
@@ -234,7 +236,7 @@ def fetch_market_day_cached(trade_date: str, market: str, fetch_fn):
     if cached_mem is not None:
         return cached_mem if not cached_mem.empty else None
 
-    db = SessionLocal()
+    db = CacheSessionLocal()
     try:
         cached = load_daily_cache(db, trade_date, market)
         if cached is not None:
