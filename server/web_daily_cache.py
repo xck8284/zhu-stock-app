@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -17,6 +18,19 @@ from models import DailyMarketCache
 
 _write_lock = threading.Lock()
 _mem_cache: dict[tuple[str, str], pd.DataFrame] = {}
+
+
+def _compact_history_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """Reduce peak memory while hundreds of cached market days are loaded."""
+    for column in frame.select_dtypes(include=["object"]).columns:
+        frame[column] = frame[column].map(
+            lambda value: sys.intern(value) if isinstance(value, str) else value
+        )
+    for column in frame.select_dtypes(include=["float64"]).columns:
+        frame[column] = pd.to_numeric(frame[column], downcast="float")
+    for column in frame.select_dtypes(include=["int64"]).columns:
+        frame[column] = pd.to_numeric(frame[column], downcast="integer")
+    return frame
 
 
 def _now_utc():
@@ -169,7 +183,7 @@ def preload_cached_history_frames(dates: list, progress_callback=None):
                     batch_records.extend(records)
 
         if batch_records:
-            frames.append(pd.DataFrame(batch_records))
+            frames.append(_compact_history_frame(pd.DataFrame(batch_records)))
 
         parsed = min(parse_total, batch_start + len(batch_keys))
         if progress_callback:
