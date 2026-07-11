@@ -967,29 +967,28 @@ def build_weekly_k_from_daily(daily_df):
 
     df = daily_df.copy()
     df["日期"] = pd.to_datetime(df["日期"])
-    df = df.sort_values(["股票代號", "日期"]).reset_index(drop=True)
+    df = df.sort_values(["股票代號", "日期"], kind="mergesort").reset_index(drop=True)
     df["週別"] = df["日期"].dt.to_period("W-FRI")
+    df["成交股數"] = pd.to_numeric(df["成交股數"], errors="coerce").fillna(0)
 
-    rows = []
-    for (code, week_period), grp in df.groupby(["股票代號", "週別"]):
-        grp = grp.sort_values("日期")
-        first_row = grp.iloc[0]
-        last_row = grp.iloc[-1]
-        rows.append(
-            {
-                "股票代號": code,
-                "股票名稱": last_row["股票名稱"],
-                "市場別": last_row["市場別"],
-                "週別": str(week_period),
-                "週結算日期": last_row["日期"].strftime("%Y-%m-%d"),
-                "週開盤價": first_row["開盤價"],
-                "週最高價": grp["最高價"].max(),
-                "週最低價": grp["最低價"].min(),
-                "週收盤價": last_row["收盤價"],
-                "週成交量(張)": int(round(grp["成交股數"].fillna(0).sum() / 1000)),
-            }
+    weekly = (
+        df.groupby(["股票代號", "週別"], sort=False, observed=True)
+        .agg(
+            股票名稱=("股票名稱", "last"),
+            市場別=("市場別", "last"),
+            週結算日期=("日期", "last"),
+            週開盤價=("開盤價", "first"),
+            週最高價=("最高價", "max"),
+            週最低價=("最低價", "min"),
+            週收盤價=("收盤價", "last"),
+            成交股數合計=("成交股數", "sum"),
         )
-    return pd.DataFrame(rows).sort_values(["股票代號", "週結算日期"]).reset_index(drop=True)
+        .reset_index()
+    )
+    weekly["週別"] = weekly["週別"].astype(str)
+    weekly["週結算日期"] = weekly["週結算日期"].dt.strftime("%Y-%m-%d")
+    weekly["週成交量(張)"] = (weekly.pop("成交股數合計") / 1000).round().astype("int64")
+    return weekly.sort_values(["股票代號", "週結算日期"], kind="mergesort").reset_index(drop=True)
 
 
 def calculate_weekly_indicators(weekly_df):
