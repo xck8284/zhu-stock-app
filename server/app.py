@@ -27,7 +27,8 @@ from schemas import (
     MessageResponse,
     SendRegisterCodeRequest, VerifyRegisterCodeRequest,
     LoginByAccountRequest, ForgotPasswordRequest, ResetPasswordRequest,
-    AdminGrantFreeRequest, AdminSetPlanRequest, AdminRebindDeviceRequest,
+    AdminGrantFreeRequest, AdminSetPlanRequest, AdminAdjustDaysRequest, AdminSetAccessRequest,
+    AdminRebindDeviceRequest,
     AdminDeactivateUserRequest, PaymentReportCreateRequest, FeedbackSubmitRequest,
 )
 from security import hash_password, verify_password, create_access_token, decode_access_token
@@ -1081,6 +1082,105 @@ def admin_set_plan(
         "account": data.account,
         "plan_type": data.plan_type,
         "subscription_end_at": end,
+    }
+
+
+@app.post("/admin/adjust-days")
+def admin_adjust_days(
+    data: AdminAdjustDaysRequest,
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    admin = get_current_creator(authorization, db)
+    user = db.query(User).filter(
+        (User.username == data.account) | (User.email == normalize_email(data.account))
+    ).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="找不到使用者")
+    if data.days == 0:
+        raise HTTPException(status_code=400, detail="調整天數不可為 0")
+
+    now = now_utc()
+    current_end = user.subscription_end_at or user.trial_end_at or now
+    if current_end.tzinfo is None:
+        current_end = current_end.replace(tzinfo=timezone.utc)
+    base = max(current_end, now) if data.days > 0 else current_end
+    new_end = base + timedelta(days=data.days)
+
+    user.subscription_end_at = new_end
+    user.subscription_start_at = user.subscription_start_at or now
+    if new_end > now:
+        user.subscription_status = "active"
+        if user.plan_type in (None, "", "none"):
+            user.plan_type = "free_grant"
+        user.is_active = True
+    else:
+        user.subscription_status = "expired"
+    user.free_reason = (data.reason or "").strip() or user.free_reason
+    user.updated_at = now
+    db.add(user)
+    db.add(AbuseLog(
+        email=user.email,
+        ip="admin",
+        event_type="adjust_days",
+        detail=f"admin={admin.email}, days={data.days}, reason={data.reason}, new_end={new_end.isoformat()}",
+    ))
+    db.commit()
+    return {
+        "success": True,
+        "message": f"已調整 {data.days:+d} 天",
+        "account": data.account,
+        "subscription_end_at": new_end,
+        "subscription_status": user.subscription_status,
+    }
+
+
+@app.post("/admin/set-access")
+def admin_set_access(
+    data: AdminSetAccessRequest,
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    admin = get_current_creator(authorization, db)
+    user = db.query(User).filter(
+        (User.username == data.account) | (User.email == normalize_email(data.account))
+    ).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="找不到使用者")
+
+    now = now_utc()
+    if data.enabled:
+        current_end = user.subscription_end_at
+        if current_end is not None and current_end.tzinfo is None:
+            current_end = current_end.replace(tzinfo=timezone.utc)
+        if current_end is None or current_end <= now:
+            user.subscription_end_at = now + timedelta(days=30)
+        user.subscription_start_at = user.subscription_start_at or now
+        user.subscription_status = "active"
+        user.plan_type = user.plan_type if user.plan_type not in (None, "", "none") else "free_grant"
+        user.is_active = True
+    else:
+        user.subscription_status = "expired"
+        user.plan_type = "none"
+        user.subscription_end_at = now
+        user.payment_status = "revoked"
+
+    user.free_reason = (data.reason or "").strip() or user.free_reason
+    user.updated_at = now
+    db.add(user)
+    db.add(AbuseLog(
+        email=user.email,
+        ip="admin",
+        event_type="set_access",
+        detail=f"admin={admin.email}, enabled={data.enabled}, reason={data.reason}",
+    ))
+    db.commit()
+    return {
+        "success": True,
+        "message": "已開通會員資格" if data.enabled else "已取消會員資格",
+        "account": data.account,
+        "enabled": data.enabled,
+        "subscription_end_at": user.subscription_end_at,
     }
 
 

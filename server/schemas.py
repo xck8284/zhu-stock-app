@@ -58,6 +58,18 @@ class AdminSetPlanRequest(BaseModel):
     plan_type: str  # monthly / quarterly / yearly
 
 
+class AdminAdjustDaysRequest(BaseModel):
+    account: str
+    days: int = Field(ge=-3650, le=3650)
+    reason: str = ""
+
+
+class AdminSetAccessRequest(BaseModel):
+    account: str
+    enabled: bool
+    reason: str = ""
+
+
 class AdminRebindDeviceRequest(BaseModel):
     account: str
     device_id: str
