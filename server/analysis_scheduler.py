@@ -384,6 +384,6 @@ def stop_analysis_scheduler() -> None:
 
 def maybe_refresh_on_startup() -> None:
     cached = load_web_analysis_result()
-    if should_refresh_analysis(cached):
+    if (cached or {}).get("job_status") == "failed" or should_refresh_analysis(cached):
         logger.info("[analysis] startup refresh scheduled")
         run_analysis_in_background(trigger="startup")
