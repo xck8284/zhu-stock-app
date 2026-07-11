@@ -282,6 +282,12 @@ def run_analysis_and_persist(trigger: str = "manual") -> dict:
         def _on_phase(phase):
             if phase == "strategy":
                 _save_running_job_patch(job_progress=86, job_message="歷史快取完成，正在計算選股…")
+            elif phase == "bullish":
+                _save_running_job_patch(job_progress=88, job_message="正在計算看多與多方關鍵K…")
+            elif phase == "bearish":
+                _save_running_job_patch(job_progress=93, job_message="正在計算看空與空方關鍵K…")
+            elif phase == "finalize":
+                _save_running_job_patch(job_progress=97, job_message="正在整理分析結果…")
 
         result = run_web_strategy_analysis(
             include_warrants=False,
