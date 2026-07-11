@@ -1039,7 +1039,7 @@ def build_master_df(daily_df):
     return master
 
 
-def build_training_pool(weekly_ma_df, master_df):
+def build_training_pool(weekly_ma_df, master_df, trend_cache=None):
     rows = []
     industry_map = master_df[["股票代號", "產業別"]].drop_duplicates(subset=["股票代號"]).copy()
     df = weekly_ma_df.copy()
@@ -1054,7 +1054,9 @@ def build_training_pool(weekly_ma_df, master_df):
         if latest["週成交量(張)"] < MIN_WEEKLY_VOLUME:
             continue
 
-        trend = analyze_best_descending_trendline(grp)
+        trend = trend_cache.get(code) if trend_cache is not None and code in trend_cache else analyze_best_descending_trendline(grp)
+        if trend_cache is not None:
+            trend_cache[code] = trend
         score, tags = calc_training_score(grp, trend)
         base_ok = (
             latest["週收盤價"] >= latest["週20MA"] * 0.95 if pd.notna(latest["週20MA"]) else False
@@ -1092,7 +1094,7 @@ def build_training_pool(weekly_ma_df, master_df):
     return out.reset_index(drop=True)
 
 
-def build_bearish_pool(weekly_ma_df, master_df):
+def build_bearish_pool(weekly_ma_df, master_df, trend_cache=None):
     rows = []
     industry_map = master_df[["股票代號", "產業別"]].drop_duplicates(subset=["股票代號"]).copy()
     df = weekly_ma_df.copy()
@@ -1107,7 +1109,9 @@ def build_bearish_pool(weekly_ma_df, master_df):
         if latest["週成交量(張)"] < MIN_WEEKLY_VOLUME or latest["週收盤價"] >= latest["週20MA"]:
             continue
 
-        trend = analyze_best_ascending_trendline(grp)
+        trend = trend_cache.get(code) if trend_cache is not None and code in trend_cache else analyze_best_ascending_trendline(grp)
+        if trend_cache is not None:
+            trend_cache[code] = trend
         score, _tags = calc_bearish_training_score(grp, trend)
         base_ok = (
             latest["週收盤價"] <= latest["週20MA"] * 1.05 if pd.notna(latest["週20MA"]) else False
@@ -1330,7 +1334,7 @@ def build_client_bearish_view(bearish_df):
     return out.drop(columns=["_star_"], errors="ignore").reset_index(drop=True)
 
 
-def build_strict_breakout_sheet(weekly_ma_df, master_df):
+def build_strict_breakout_sheet(weekly_ma_df, master_df, trend_cache=None):
     """STRICT_BREAKOUT → 桌面版多方關鍵K 來源。"""
     if weekly_ma_df.empty:
         return pd.DataFrame()
@@ -1346,7 +1350,9 @@ def build_strict_breakout_sheet(weekly_ma_df, master_df):
             continue
         if pd.isna(latest["週成交量(張)"]) or latest["週成交量(張)"] < MIN_WEEKLY_VOLUME:
             continue
-        trend = analyze_best_descending_trendline(grp)
+        trend = trend_cache.get(code) if trend_cache is not None and code in trend_cache else analyze_best_descending_trendline(grp)
+        if trend_cache is not None:
+            trend_cache[code] = trend
         if trend is None or not trend.get("strict_ok"):
             continue
         work = trend["work_df"]
@@ -1376,7 +1382,7 @@ def build_strict_breakout_sheet(weekly_ma_df, master_df):
     ).reset_index(drop=True)
 
 
-def build_bearish_key_breakdown_sheet(weekly_ma_df, master_df):
+def build_bearish_key_breakdown_sheet(weekly_ma_df, master_df, trend_cache=None):
     """BEARISH_KEY_BREAKDOWN → 桌面版空方關鍵K 來源。"""
     if weekly_ma_df.empty:
         return pd.DataFrame()
@@ -1392,7 +1398,9 @@ def build_bearish_key_breakdown_sheet(weekly_ma_df, master_df):
             continue
         if pd.isna(latest["週成交量(張)"]) or latest["週成交量(張)"] < MIN_WEEKLY_VOLUME:
             continue
-        trend = analyze_best_ascending_trendline(grp)
+        trend = trend_cache.get(code) if trend_cache is not None and code in trend_cache else analyze_best_ascending_trendline(grp)
+        if trend_cache is not None:
+            trend_cache[code] = trend
         if trend is None or not (trend.get("line_break_now") and not trend.get("line_break_prev")):
             continue
         industry = industry_map.loc[industry_map["股票代號"] == code, "產業別"]
@@ -2109,7 +2117,12 @@ def run_web_strategy_analysis(include_warrants=True, progress_callback=None, pha
     weekly_ma_df = calculate_weekly_indicators(weekly_df)
     master_df = build_master_df(daily_all)
 
-    training_pool = build_training_pool(weekly_ma_df, master_df)
+    if phase_callback:
+        phase_callback("bullish")
+    bullish_trend_cache = {}
+    training_pool = build_training_pool(weekly_ma_df, master_df, trend_cache=bullish_trend_cache)
+    strict_df = build_strict_breakout_sheet(weekly_ma_df, master_df, trend_cache=bullish_trend_cache)
+    bullish_trend_cache.clear()
     otc_supplement = pd.DataFrame()
     otc_supplement = build_otc_bullish_supplement_pool(
         weekly_ma_df, master_df, existing_df=training_pool, min_count=40
@@ -2118,9 +2131,15 @@ def run_web_strategy_analysis(include_warrants=True, progress_callback=None, pha
         training_pool = pd.concat([training_pool, otc_supplement], ignore_index=True)
         training_pool = training_pool.drop_duplicates(subset=["股票代號"], keep="first").reset_index(drop=True)
 
-    bearish_pool = build_bearish_pool(weekly_ma_df, master_df)
-    strict_df = build_strict_breakout_sheet(weekly_ma_df, master_df)
-    bearish_key_df = build_bearish_key_breakdown_sheet(weekly_ma_df, master_df)
+    if phase_callback:
+        phase_callback("bearish")
+    bearish_trend_cache = {}
+    bearish_pool = build_bearish_pool(weekly_ma_df, master_df, trend_cache=bearish_trend_cache)
+    bearish_key_df = build_bearish_key_breakdown_sheet(weekly_ma_df, master_df, trend_cache=bearish_trend_cache)
+    bearish_trend_cache.clear()
+
+    if phase_callback:
+        phase_callback("finalize")
 
     bullish_display = build_client_bullish_view(training_pool)
     bearish_display = build_client_bearish_view(bearish_pool)
