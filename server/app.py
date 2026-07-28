@@ -1657,7 +1657,7 @@ def _verify_cron_secret(x_cron_secret: Optional[str]) -> None:
 
 
 @app.get("/web/public/status")
-def web_public_status():
+def web_public_status(db: Session = Depends(get_db)):
     """公開狀態（不含個股清單），供監控與前端顯示更新時間。"""
     meta = _reload_web_analysis_from_db()
     return {
@@ -1666,6 +1666,7 @@ def web_public_status():
         "has_data": bool(WEB_BULLISH_DATA or WEB_BEARISH_DATA or WEB_WARRANT_DATA),
         "cron_ready": bool(get_effective_cron_secret()),
         "engine_version": "2026-07-05h",
+        "member_count": db.query(User).count(),
     }
 
 
